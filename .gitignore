@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.log
+folder_history.json
+margins_config.json
+pending_changelog.json
