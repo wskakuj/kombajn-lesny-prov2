@@ -5,32 +5,34 @@ Kombajn Leśny PRO — specyfikacja PyInstaller
 Buduje plik .exe z nowej struktury modułowej.
 
 Użycie:
-    pyinstaller kombajn_lesny.spec
-
-Albo komenda bezpośrednia:
-    pyinstaller --noconfirm --onefile --windowed \
-        --icon "kombajn.ico" --name "KombajnLesnyPRO" \
-        --add-data "STR_TYT.docx;." \
-        --add-data "STR_TYT_TYLKO-ISL-2.docx;." \
-        --add-data "Skroty.docx;." \
-        --add-data "BIAŁYNIN KRASÓWKA.xlsx;." \
-        --add-data "config;config" \
-        --add-data "pusty;pusty" \
-        main.py
+  pyinstaller kombajn_lesny.spec
 """
 
 import sys
 import os
-from PyInstaller.utils.hooks import collect_submodules
-
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
 block_cipher = None
 
 # Zbierz wszystkie submoduły pakietu app (ważne dla PyInstaller!)
 hidden_imports = collect_submodules('app')
+
+# customtkinter i CTkToolTip mają pliki danych (motywy, czcionki, obrazy) — trzeba je włączyć ręcznie
+hidden_imports += collect_submodules('customtkinter')
+hidden_imports += collect_submodules('CTkToolTip')
+
+datas = [
+    ('STR_TYT.docx', '.'),
+    ('STR_TYT_TYLKO-ISL-2.docx', '.'),
+    ('Skroty.docx', '.'),
+    ('BIAŁYNIN KRASÓWKA.xlsx', '.'),
+    ('config', 'config'),
+    ('pusty', 'pusty'),
+]
+datas += collect_data_files('customtkinter')
+datas += collect_data_files('CTkToolTip')
+
 hidden_imports += [
-    'customtkinter',
-    'CTkToolTip',
     'win32com.client',
     'pythoncom',
     'pyautogui',
@@ -47,14 +49,7 @@ a = Analysis(
     ['main.py'],
     pathex=['.'],
     binaries=[],
-    datas=[
-        ('STR_TYT.docx', '.'),
-        ('STR_TYT_TYLKO-ISL-2.docx', '.'),
-        ('Skroty.docx', '.'),
-        ('BIAŁYNIN KRASÓWKA.xlsx', '.'),
-        ('config', 'config'),
-        ('pusty', 'pusty'),
-    ],
+    datas=datas,
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
