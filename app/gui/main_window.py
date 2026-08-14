@@ -52,7 +52,6 @@ from app.gui.tabs.tab_split_pdf import TabSplitPdfMixin
 from app.gui.tabs.tab_mdb_update import TabMdbUpdateMixin
 from app.gui.tabs.tab_pdf_converter import TabPdfConverterMixin
 from app.gui.tabs.tab_rozliczanie import TabRozliczanieMixin
-from app.gui.tabs.tab_krzyzowki import TabKrzyzowkiMixin
 from app.gui.tabs.tab_halizny import TabHaliznyMixin
 from app.gui.tabs.tab_excel_z_mdb import TabExcelZMdbMixin
 from app.gui.tabs.tab_tworzenie_mietkow import TabTworzenieMietkowMixin
@@ -73,7 +72,6 @@ class ModernApp(
     TabMdbUpdateMixin,
     TabPdfConverterMixin,
     TabRozliczanieMixin,
-    TabKrzyzowkiMixin,
     TabHaliznyMixin,
     TabExcelZMdbMixin,
     TabTworzenieMietkowMixin,
@@ -632,12 +630,10 @@ class ModernApp(
         self.rozliczanie_tabview.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
 
         tab_rozl_main = self.rozliczanie_tabview.add("Rozliczanie powierzchni")
-        tab_tworzenie_mietkow = self.rozliczanie_tabview.add("Tworzenie Mietków")
-        tab_krzyzowki = self.rozliczanie_tabview.add("Wpisanie krzyżówek")
+        tab_tworzenie_mietkow = self.rozliczanie_tabview.add("Tworzenie i wpisywanie mietków")
         tab_halizny = self.rozliczanie_tabview.add("Halizny")
         self.setup_rozliczanie_tab(tab_rozl_main)
         self.setup_tworzenie_mietkow_tab(tab_tworzenie_mietkow)
-        self.setup_krzyzowki_tab(tab_krzyzowki)
         self.setup_halizny_tab(tab_halizny)
         tab_excel_z_mdb = self.rozliczanie_tabview.add("Excel z MDB")
         self.setup_excel_z_mdb_tab(tab_excel_z_mdb)
