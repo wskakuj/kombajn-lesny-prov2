@@ -282,9 +282,12 @@ class TabTworzenieMietkowMixin:
             rest = blocks[i + 1]
             lines = [line.strip() for line in rest.split('\n') if line.strip()]
 
+            # --- ROZBIJANIE LINII ZE ŚREDNIKAMI ---
+            # Rozbijamy na średnikach, ALE tylko gdy w linii NIE MA kodu pocztowego.
+            # Linia z kodem pocztowym (np. "OSIEDLE 24A; 64-410 SIERAKÓW") to JEDEN adres.
             expanded_lines = []
             for line in lines:
-                if ';' in line:
+                if ';' in line and not re.search(r'\d{2}-\d{3}', line):
                     parts = [p.strip().rstrip(';').strip() for p in line.split(';')]
                     parts = [p for p in parts if p]
                     expanded_lines.extend(parts)
@@ -307,7 +310,7 @@ class TabTworzenieMietkowMixin:
                     'miejsc.' in line.lower() or
                     re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or
                     re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or
-                    re.search(r'^\D+\s+\d+[A-Za-z]?\s*$', line) is not None  # słowo + numer(+litera) np. 'OSIEDLE 24A'
+                    re.search(r'^\D+\s+\d+[A-Za-z]?\s*$', line) is not None
                 )
 
                 if has_marker:
@@ -334,15 +337,12 @@ class TabTworzenieMietkowMixin:
                 if ';' in addr:
                     parts = [p.strip() for p in addr.split(';') if p.strip()]
                     if len(parts) >= 2:
-                        # Druga część to zazwyczaj "kod pocztowy + miasto" (np. "64-410 SIERAKÓW")
                         city_match = re.match(r'\d{2}-\d{3}\s+(.+)', parts[1])
                         if city_match:
                             city_name = city_match.group(1).strip()
                             if city_name in parts[0]:
-                                # Miasto się powtarza w obu częściach → zostaw tylko pierwszą
                                 addr = parts[0]
                             else:
-                                # Różne → odwróć i połącz: "kod miasto ulica numer"
                                 addr = " ".join(parts[::-1])
                         else:
                             addr = " ".join(parts[::-1])
