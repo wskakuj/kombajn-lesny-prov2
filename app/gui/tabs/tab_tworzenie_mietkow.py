@@ -307,7 +307,7 @@ class TabTworzenieMietkowMixin:
                     'miejsc.' in line.lower() or
                     re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or
                     re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or
-                    re.search(r'^\D+\s+\d+\s*$', line) is not None
+                    re.search(r'^\D+\s+\d+[A-Za-z]?\s*$', line) is not None  # słowo + numer(+litera) np. 'OSIEDLE 24A'
                 )
 
                 if has_marker:
