@@ -59,6 +59,8 @@ class TabRozliczanieMixin:
         self.rozl_xls_entry = ctk.CTkEntry(
             card, placeholder_text="Wskaż folder z ewidencją (.xls/.xlsx)", height=36)
         self.rozl_xls_entry.grid(row=0, column=1, padx=5, pady=(15, 8), sticky="ew")
+        _saved = self.get_setting("folder_rozl_xls_entry")
+        if _saved: self.rozl_xls_entry.insert(0, _saved)
         ctk.CTkButton(
             card, text="Przeglądaj", image=self.icon_folder,
             command=lambda: self.select_dir(self.rozl_xls_entry),
@@ -70,6 +72,8 @@ class TabRozliczanieMixin:
         self.rozl_val_entry = ctk.CTkEntry(
             card, placeholder_text="Wskaż folder z plikami z geodezji (.val)", height=36)
         self.rozl_val_entry.grid(row=1, column=1, padx=5, pady=8, sticky="ew")
+        _saved = self.get_setting("folder_rozl_val_entry")
+        if _saved: self.rozl_val_entry.insert(0, _saved)
         ctk.CTkButton(
             card, text="Przeglądaj", image=self.icon_folder,
             command=lambda: self.select_dir(self.rozl_val_entry),
@@ -81,6 +85,8 @@ class TabRozliczanieMixin:
         self.rozl_out_entry = ctk.CTkEntry(
             card, placeholder_text="Gdzie zapisać rozliczone tabele?", height=36)
         self.rozl_out_entry.grid(row=2, column=1, padx=5, pady=(8, 15), sticky="ew")
+        _saved = self.get_setting("folder_rozl_out_entry")
+        if _saved: self.rozl_out_entry.insert(0, _saved)
         ctk.CTkButton(
             card, text="Przeglądaj", image=self.icon_folder,
             command=lambda: self.select_dir(self.rozl_out_entry),
@@ -231,6 +237,78 @@ class TabRozliczanieMixin:
             font=ctk.CTkFont(family="Segoe UI", size=11), text_color="#888888",
         ).grid(row=row_idx, column=0, padx=15, pady=(10, 14), sticky="w")
 
+    def validate_rozliczanie(self, folder_xls, folder_val, folder_out):
+        """Walidacja przed startem — sprawdza foldery, pliki i dopasowanie. Zwraca listę problemów."""
+        problems = []
+
+        # 1. Sprawdź foldery
+        if not folder_xls:
+            problems.append("• Nie wskazano folderu XLS.")
+        elif not Path(folder_xls).exists():
+            problems.append(f"• Folder XLS nie istnieje:\n  {folder_xls}")
+
+        if not folder_val:
+            problems.append("• Nie wskazano folderu VAL.")
+        elif not Path(folder_val).exists():
+            problems.append(f"• Folder VAL nie istnieje:\n  {folder_val}")
+
+        if not folder_out:
+            problems.append("• Nie wskazano folderu wyjściowego.")
+
+        if problems:
+            return problems  # Nie sprawdzaj dalej jeśli foldery są złe
+
+        # 2. Sprawdź pliki XLS
+        xls_files = sorted([p for p in Path(folder_xls).iterdir()
+                     if p.is_file() and p.suffix.lower() in {".xls", ".xlsx"} and not p.name.startswith("~$")])
+        if not xls_files:
+            problems.append("• Folder XLS nie zawiera żadnych plików .xls/.xlsx.")
+            return problems
+
+        # 3. Sprawdź pliki VAL
+        val_files = sorted([p for p in Path(folder_val).iterdir() if p.is_file() and p.suffix.lower() == ".val"])
+        if not val_files:
+            problems.append("• Folder VAL nie zawiera żadnych plików .val.")
+            return problems
+
+        # 4. Dopasowanie XLS ↔ VAL — używa tej samej logiki co run_rozliczanie_thread
+        #    czyli: wyczyść nazwę ze spacji/podkreślników i sprawdź czy nazwa pliku VAL
+        #    kończy się na nazwę XLS + ".val" (np. 0301BIAŁCZ.val pasuje do BIAŁCZ.xls)
+        import re as _re
+        val_matched = set()
+        xls_without_val = []
+        for x in xls_files:
+            x_czysta = _re.sub(r"[\s_]", "", x.stem.lower())
+            found = False
+            for v in val_files:
+                v_czysta = _re.sub(r"[\s_]", "", v.name.lower())
+                if v_czysta.endswith(x_czysta + ".val"):
+                    found = True
+                    val_matched.add(v.name)
+                    break
+            if not found:
+                xls_without_val.append(x.stem)
+
+        val_without_xls = [v.stem for v in val_files if v.name not in val_matched]
+
+        if xls_without_val:
+            xls_without_val.sort()
+            problems.append(f"• Brak plików .val dla {len(xls_without_val)} obrębów:")
+            for nazwa in xls_without_val[:10]:
+                problems.append(f"    — {nazwa} (brak pasującego .val)")
+            if len(xls_without_val) > 10:
+                problems.append(f"    ... i {len(xls_without_val) - 10} więcej")
+
+        if val_without_xls:
+            val_without_xls.sort()
+            problems.append(f"• Pliki .val bez odpowiadających .xls ({len(val_without_xls)}):")
+            for nazwa in val_without_xls[:10]:
+                problems.append(f"    — {nazwa}.val (brak pasującego .xls)")
+            if len(val_without_xls) > 10:
+                problems.append(f"    ... i {len(val_without_xls) - 10} więcej")
+
+        return problems
+
     def start_rozliczanie_pipeline(self):
         folder_xls = self.rozl_xls_entry.get().strip() if self.rozl_xls_entry else ""
         folder_val = self.rozl_val_entry.get().strip() if self.rozl_val_entry else ""
@@ -252,6 +330,19 @@ class TabRozliczanieMixin:
 
         tylko_wyrownywanie = self.rozl_tylko_wyrownywanie_var.get()
         usun_puste_jrej = self.rozl_usun_puste_jrej_var.get()
+
+        # Walidacja przed startem
+        problems = self.validate_rozliczanie(folder_xls, folder_val, folder_out)
+        if problems:
+            msg = "Wykryto problemy przed startem:\n\n" + "\n".join(problems)
+            msg += "\n\nCzy chcesz kontynuować mimo to?"
+            if not messagebox.askyesno("Walidacja — znaleziono problemy", msg):
+                return
+
+        # Zapisz foldery w ustawieniach
+        self.set_setting("folder_rozl_xls_entry", folder_xls)
+        self.set_setting("folder_rozl_val_entry", folder_val)
+        self.set_setting("folder_rozl_out_entry", folder_out)
 
         self.last_output_dir = Path(folder_out)
         self._disable_ui_for_process()

@@ -79,6 +79,19 @@ class TabNazwiskaMietekMixin:
         self.nm_wsie_obdo_entry = _wsie_row(3, 0, 1, "Obowiązuje do:", "31.12.2032", "DD.MM.RRRR")
         self.nm_wsie_nrws_entry = _wsie_row(3, 2, 3, "Nr wsi:", "1", "np. 1")
         self.nm_wsie_rokz_entry = _wsie_row(4, 0, 1, "Rok zal.:", "19", "np. 19")
+
+        _wsie_defaults = {
+            "wsie_wojew": "10", "wsie_powiat": "", "wsie_stan": "01.01.2023",
+            "wsie_obod": "01.01.2023", "wsie_obdo": "31.12.2032",
+            "wsie_nrws": "1", "wsie_rokz": "19",
+        }
+        for _attr, _default in _wsie_defaults.items():
+            _entry = getattr(self, f"nm_{_attr}_entry", None)
+            if _entry is not None:
+                _saved = self.get_setting(f"wsie_{_attr}", _default)
+                if _saved:
+                    _entry.delete(0, "end")
+                    _entry.insert(0, _saved)
         ctk.CTkLabel(wsie_frame, text="(NAZWA i GMINA = nazwa obrębu, wpisywane automatycznie)",
                      font=ctk.CTkFont(size=11), text_color="#777777").grid(row=4, column=2, columnspan=2, padx=(0, 12),
                                                                            pady=4, sticky="w")
@@ -127,6 +140,14 @@ class TabNazwiskaMietekMixin:
         self.last_output_dir = Path(out_dir)
         self._disable_ui_for_process()
         self.set_progress(0)
+
+        self.set_setting("wsie_wsie_wojew", self.nm_wsie_wojew_entry.get().strip())
+        self.set_setting("wsie_wsie_powiat", self.nm_wsie_powiat_entry.get().strip())
+        self.set_setting("wsie_wsie_stan", self.nm_wsie_stan_entry.get().strip())
+        self.set_setting("wsie_wsie_obod", self.nm_wsie_obod_entry.get().strip())
+        self.set_setting("wsie_wsie_obdo", self.nm_wsie_obdo_entry.get().strip())
+        self.set_setting("wsie_wsie_nrws", self.nm_wsie_nrws_entry.get().strip())
+        self.set_setting("wsie_wsie_rokz", self.nm_wsie_rokz_entry.get().strip())
 
         wsie_meta = {
             'WOJEW': self.nm_wsie_wojew_entry.get().strip(),

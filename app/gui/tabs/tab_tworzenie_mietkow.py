@@ -46,16 +46,22 @@ class TabTworzenieMietkowMixin:
 
         ctk.CTkLabel(card, text="1. Folder Główny XLS (Ewidencja):", font=font_label, text_color="#E0E0E0").grid(row=0, column=0, padx=15, pady=(15, 8), sticky="w")
         self.mietki_bazowy_entry = ctk.CTkEntry(card, placeholder_text="Stąd program pobierze nazwy wsi i właścicieli...", height=36)
+        _saved = self.get_setting("folder_mietki_bazowy_entry")
+        if _saved: self.mietki_bazowy_entry.insert(0, _saved)
         self.mietki_bazowy_entry.grid(row=0, column=1, padx=5, pady=(15, 8), sticky="ew")
         ctk.CTkButton(card, text="Przeglądaj", image=self.icon_folder, command=lambda: self.select_dir(self.mietki_bazowy_entry), width=110, height=36, font=font_btn, fg_color="#333333", hover_color="#444444").grid(row=0, column=2, padx=15, pady=(15, 8))
 
         ctk.CTkLabel(card, text="2. Folder XLSX (Rozliczone):", font=font_label, text_color="#E0E0E0").grid(row=1, column=0, padx=15, pady=8, sticky="w")
         self.mietki_rozlicz_entry = ctk.CTkEntry(card, placeholder_text="Stąd program pobierze numery J.rej i krzyżówki...", height=36)
+        _saved = self.get_setting("folder_mietki_rozlicz_entry")
+        if _saved: self.mietki_rozlicz_entry.insert(0, _saved)
         self.mietki_rozlicz_entry.grid(row=1, column=1, padx=5, pady=8, sticky="ew")
         ctk.CTkButton(card, text="Przeglądaj", image=self.icon_folder, command=lambda: self.select_dir(self.mietki_rozlicz_entry), width=110, height=36, font=font_btn, fg_color="#333333", hover_color="#444444").grid(row=1, column=2, padx=15, pady=8)
 
         ctk.CTkLabel(card, text="3. Folder docelowy zapisu:", font=font_label, text_color="#E0E0E0").grid(row=2, column=0, padx=15, pady=(8, 15), sticky="w")
         self.mietki_out_entry = ctk.CTkEntry(card, placeholder_text="Gdzie zapisać gotowe struktury MS-DOS z bazą DBF?", height=36)
+        _saved = self.get_setting("folder_mietki_out_entry")
+        if _saved: self.mietki_out_entry.insert(0, _saved)
         self.mietki_out_entry.grid(row=2, column=1, padx=5, pady=(8, 15), sticky="ew")
         ctk.CTkButton(card, text="Przeglądaj", image=self.icon_folder, command=lambda: self.select_dir(self.mietki_out_entry), width=110, height=36, font=font_btn, fg_color="#333333", hover_color="#444444").grid(row=2, column=2, padx=15, pady=(8, 15))
 
@@ -82,6 +88,20 @@ class TabTworzenieMietkowMixin:
         self.wsie_obdo_entry   = _wsie_row(3, 0, 1, "Obowiązuje do:",     "31.12.2032",  "DD.MM.RRRR")
         self.wsie_nrws_entry   = _wsie_row(3, 2, 3, "Nr wsi:",            "1",           "np. 1")
         self.wsie_rokz_entry   = _wsie_row(4, 0, 1, "Rok zal.:",          "19",          "np. 19")
+
+        # --- Przywróć zapisane wartości pól WSIE.DBF ---
+        _wsie_defaults = {
+            "wsie_wojew": "10", "wsie_powiat": "", "wsie_stan": "01.01.2023",
+            "wsie_obod": "01.01.2023", "wsie_obdo": "31.12.2032",
+            "wsie_nrws": "1", "wsie_rokz": "19",
+        }
+        for _attr, _default in _wsie_defaults.items():
+            _entry = getattr(self, f"{_attr}_entry", None)
+            if _entry is not None:
+                _saved = self.get_setting(f"wsie_{_attr}", _default)
+                if _saved:
+                    _entry.delete(0, "end")
+                    _entry.insert(0, _saved)
         ctk.CTkLabel(wsie_frame, text="(NAZWA i GMINA = nazwa obrębu, wpisywane automatycznie)",
                      font=ctk.CTkFont(size=11), text_color="#777777").grid(row=4, column=2, columnspan=2, padx=(0, 12), pady=4, sticky="w")
 
@@ -133,6 +153,70 @@ class TabTworzenieMietkowMixin:
             messagebox.showwarning("Błąd", "Wybierz folder docelowy dla nowych obrębów.")
             return
 
+        # --- WALIDACJA PRZED STARTEM ---
+        baz_path = Path(baz_dir)
+        rozl_path = Path(rozl_dir)
+        baz_xls = sorted([p for p in baz_path.iterdir() if p.is_file() and p.suffix.lower() in {".xls", ".xlsx"} and not p.name.startswith("~$")]) if baz_path.exists() else []
+        rozl_xls = sorted([p for p in rozl_path.iterdir() if p.is_file() and p.suffix.lower() in {".xls", ".xlsx"} and not p.name.startswith("~$")]) if rozl_path.exists() else []
+
+        _problems = []
+        if not baz_xls:
+            _problems.append("• Folder bazowy nie zawiera żadnych plików .xls/.xlsx.")
+        if not rozl_xls:
+            _problems.append("• Folder rozliczeń nie zawiera żadnych plików .xls/.xlsx.")
+
+        if baz_xls and rozl_xls:
+            import re as _re
+            # Buduj klucze z nazw bazowych (np. "BIAŁCZ" → "białcz")
+            baz_map = {}
+            for p in baz_xls:
+                baz_map[_re.sub(r"[\s_]", "", p.stem.lower())] = p.stem
+            # Z rozliczeń usuń sufiks _Rozliczone przed porównaniem
+            rozl_map = {}
+            for p in rozl_xls:
+                _stem = p.stem
+                # Usuń sufiks _Rozliczone (case-insensitive)
+                _stem_lower = _stem.lower()
+                if _stem_lower.endswith("_rozliczone"):
+                    _stem = _stem[:-len("_Rozliczone")]
+                rozl_map[_re.sub(r"[\s_]", "", _stem.lower())] = p.stem
+
+            brak_w_rozl = sorted(set(baz_map.keys()) - set(rozl_map.keys()))
+            brak_w_baz = sorted(set(rozl_map.keys()) - set(baz_map.keys()))
+
+            if brak_w_rozl:
+                nazwy = [baz_map[k] for k in brak_w_rozl]
+                _problems.append(f"• {len(nazwy)} obrębów w folderze bazowym nie ma w folderze rozliczeń:")
+                for nazwa in nazwy[:10]:
+                    _problems.append(f"    — {nazwa}.xls → brak w rozliczeniach")
+                if len(nazwy) > 10:
+                    _problems.append(f"    ... i {len(nazwy) - 10} więcej")
+
+            if brak_w_baz:
+                nazwy = [rozl_map[k] for k in brak_w_baz]
+                _problems.append(f"• {len(nazwy)} plików w rozliczeniach nie ma w folderze bazowym:")
+                for nazwa in nazwy[:10]:
+                    _problems.append(f"    — {nazwa}.xls → brak w bazowym")
+                if len(nazwy) > 10:
+                    _problems.append(f"    ... i {len(nazwy) - 10} więcej")
+
+        out_path = Path(out_dir)
+        if out_path.exists():
+            existing = [p for p in out_path.iterdir() if p.is_dir()]
+            if existing:
+                _problems.append(f"• Folder wyjściowy zawiera już {len(existing)} podfolderów:")
+                for p in existing[:10]:
+                    _problems.append(f"    — {p.name}")
+                if len(existing) > 10:
+                    _problems.append(f"    ... i {len(existing) - 10} więcej")
+                _problems.append("  Zostaną one nadpisane!")
+
+        if _problems:
+            msg = "Wykryto problemy przed startem:\n\n" + "\n".join(_problems)
+            msg += "\n\nCzy chcesz kontynuować mimo to?"
+            if not messagebox.askyesno("Walidacja — znaleziono problemy", msg):
+                return
+
         baz_path = Path(baz_dir)
         xls_files = [
             f.stem for f in baz_path.iterdir()
@@ -154,6 +238,18 @@ class TabTworzenieMietkowMixin:
         self.last_output_dir = Path(out_dir)
         self._disable_ui_for_process()
         self.set_progress(0)
+
+        # Zapisz wartości pól WSIE.DBF w ustawieniach
+        self.set_setting("wsie_wsie_wojew", self.wsie_wojew_entry.get().strip())
+        self.set_setting("wsie_wsie_powiat", self.wsie_powiat_entry.get().strip())
+        self.set_setting("wsie_wsie_stan", self.wsie_stan_entry.get().strip())
+        self.set_setting("wsie_wsie_obod", self.wsie_obod_entry.get().strip())
+        self.set_setting("wsie_wsie_obdo", self.wsie_obdo_entry.get().strip())
+        self.set_setting("wsie_wsie_nrws", self.wsie_nrws_entry.get().strip())
+        self.set_setting("wsie_wsie_rokz", self.wsie_rokz_entry.get().strip())
+        self.set_setting("folder_mietki_bazowy_entry", baz_dir)
+        self.set_setting("folder_mietki_rozlicz_entry", rozl_dir)
+        self.set_setting("folder_mietki_out_entry", out_dir)
 
         wsie_meta = {
             'WOJEW': self.wsie_wojew_entry.get().strip(),
@@ -552,6 +648,35 @@ class TabTworzenieMietkowMixin:
                         self.write_dbf(str(wsie_dbf), WSIE_FIELDS, [wsie_record])
                         self.log(
                             f"  -> Zapisano WSIE.DBF (NAZWA={name}, GMINA={name}, POWIAT={(wsie_meta or {}).get('POWIAT', '')})")
+
+                        # --- WALIDACJA DBF PO ZAPISIE ---
+                        try:
+                            _fields, _records = self.read_dbf(str(wsie_dbf))
+                            if not _records:
+                                self.log(f"  ⚠️ [WALIDACJA] WSIE.DBF dla '{name}' jest pusty — brak rekordów!")
+                            else:
+                                _rec = _records[0]
+                                _dbf_issues = []
+                                if not _rec.get('NAZWA', '').strip():
+                                    _dbf_issues.append("NAZWA jest pusta")
+                                if not _rec.get('GMINA', '').strip():
+                                    _dbf_issues.append("GMINA jest pusta")
+                                if not _rec.get('WOJEW', '').strip():
+                                    _dbf_issues.append("WOJEW jest puste")
+                                if not _rec.get('POWIAT', '').strip():
+                                    _dbf_issues.append("POWIAT jest puste")
+                                try:
+                                    _nr_wsi = int(_rec.get('NR_WSI', '0'))
+                                    if _nr_wsi <= 0:
+                                        _dbf_issues.append("NR_WSI wynosi 0")
+                                except (ValueError, TypeError):
+                                    _dbf_issues.append("NR_WSI nie jest liczbą")
+                                if _dbf_issues:
+                                    self.log(f"  ⚠️ [WALIDACJA] WSIE.DBF dla '{name}': {', '.join(_dbf_issues)}")
+                                else:
+                                    self.log(f"  ✅ [WALIDACJA] WSIE.DBF dla '{name}' — OK ({len(_records)} rekord, pola wypełnione)")
+                        except Exception as _ve:
+                            self.log(f"  ⚠️ [WALIDACJA] Nie można odczytać WSIE.DBF dla '{name}': {_ve}")
                     except Exception as e:
                         self.log(f"  -> [Ostrzeżenie] Błąd zapisu WSIE.DBF dla '{name}': {e}")
 
