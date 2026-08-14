@@ -40,6 +40,7 @@ CONFIG_DIR = APP_DIR / "config"
 TERRITORY_DATA_FILE = CONFIG_DIR / "territory.json"
 HISTORY_FILE = APP_DIR / "folder_history.json"
 MARGINS_FILE = APP_DIR / "margins_config.json"
+SETTINGS_FILE = APP_DIR / "settings.json"
 
 # --- PALETA KOLORÓW ---
 # Wszystkie kolory używane w GUI, w jednym miejscu.
