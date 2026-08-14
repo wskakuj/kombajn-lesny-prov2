@@ -33,17 +33,26 @@ datas += collect_data_files('customtkinter')
 datas += collect_data_files('CTkToolTip')
 
 hidden_imports += [
+    'pandas',
+    'pandas._libs',
+    'pandas._libs.tslibs',
+    'pandas._libs.tslibs.timedeltas',
+    'numpy',
+    'numpy.core',
+    'fitz',
     'win32com.client',
     'pythoncom',
     'pyautogui',
-    'fitz',
     'pypdf',
     'openpyxl',
     'docx',
     'pyodbc',
     'PIL.Image',
     'PIL.ImageDraw',
+    'customtkinter',
+    'CTkToolTip',
 ]
+
 
 a = Analysis(
     ['main.py'],
