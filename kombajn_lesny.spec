@@ -20,7 +20,9 @@ Albo komenda bezpośrednia:
 """
 
 import sys
+import os
 from PyInstaller.utils.hooks import collect_submodules
+
 
 block_cipher = None
 
