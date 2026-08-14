@@ -337,12 +337,15 @@ class TabTworzenieMietkowMixin:
                 if ';' in addr:
                     parts = [p.strip() for p in addr.split(';') if p.strip()]
                     if len(parts) >= 2:
-                        city_match = re.match(r'\d{2}-\d{3}\s+(.+)', parts[1])
+                        city_match = re.match(r'(\d{2}-\d{3})\s+(.+)', parts[1])
                         if city_match:
-                            city_name = city_match.group(1).strip()
+                            postal_code = city_match.group(1)
+                            city_name = city_match.group(2).strip()
                             if city_name in parts[0]:
-                                addr = parts[0]
+                                # Miasto się powtarza → zachowaj kod pocztowy + pierwsza część
+                                addr = f"{postal_code} {parts[0]}"
                             else:
+                                # Różne → odwróć i połącz
                                 addr = " ".join(parts[::-1])
                         else:
                             addr = " ".join(parts[::-1])
