@@ -332,8 +332,22 @@ class TabTworzenieMietkowMixin:
                 addr = addresses[j] if j < len(addresses) else (addresses[-1] if addresses else "")
 
                 if ';' in addr:
-                    parts = [p.strip() for p in addr.split(';')]
-                    addr = " ".join(parts[::-1])
+                    parts = [p.strip() for p in addr.split(';') if p.strip()]
+                    if len(parts) >= 2:
+                        # Druga część to zazwyczaj "kod pocztowy + miasto" (np. "64-410 SIERAKÓW")
+                        city_match = re.match(r'\d{2}-\d{3}\s+(.+)', parts[1])
+                        if city_match:
+                            city_name = city_match.group(1).strip()
+                            if city_name in parts[0]:
+                                # Miasto się powtarza w obu częściach → zostaw tylko pierwszą
+                                addr = parts[0]
+                            else:
+                                # Różne → odwróć i połącz: "kod miasto ulica numer"
+                                addr = " ".join(parts[::-1])
+                        else:
+                            addr = " ".join(parts[::-1])
+                    else:
+                        addr = parts[0] if parts else "" 
                 addr = self.napraw_powtorzenia_adresu(addr)
 
                 try:
