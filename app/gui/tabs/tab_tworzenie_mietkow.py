@@ -1,5 +1,6 @@
 """
 Kombajn Leśny PRO — Mixin: TabTworzenieMietkowMixin
+Połączona zakładka: Tworzenie i wpisywanie mietków.
 """
 
 import customtkinter as ctk
@@ -8,6 +9,11 @@ from pathlib import Path
 import threading
 import re
 import shutil
+import warnings
+warnings.filterwarnings("ignore", message=".*OLE2 inconsistency.*")
+warnings.filterwarnings("ignore", message=".*file size.*not.*sector size.*")
+warnings.filterwarnings("ignore", message=".*SSCS size.*")
+import traceback
 import pandas as pd
 import numpy as np
 
@@ -20,7 +26,7 @@ from app.core.excel_tasks import (
 )
 
 class TabTworzenieMietkowMixin:
-    """Mixin dla ModernApp — metody zostały wyciągnięte z oryginalnego guipia.py."""
+    """Mixin dla ModernApp — łączy tworzenie mietków i wpisywanie krzyżówek."""
     pass
 
     def setup_tworzenie_mietkow_tab(self, parent):
@@ -44,7 +50,7 @@ class TabTworzenieMietkowMixin:
         ctk.CTkButton(card, text="Przeglądaj", image=self.icon_folder, command=lambda: self.select_dir(self.mietki_bazowy_entry), width=110, height=36, font=font_btn, fg_color="#333333", hover_color="#444444").grid(row=0, column=2, padx=15, pady=(15, 8))
 
         ctk.CTkLabel(card, text="2. Folder XLSX (Rozliczone):", font=font_label, text_color="#E0E0E0").grid(row=1, column=0, padx=15, pady=8, sticky="w")
-        self.mietki_rozlicz_entry = ctk.CTkEntry(card, placeholder_text="Stąd program pobierze numery J.rej...", height=36)
+        self.mietki_rozlicz_entry = ctk.CTkEntry(card, placeholder_text="Stąd program pobierze numery J.rej i krzyżówki...", height=36)
         self.mietki_rozlicz_entry.grid(row=1, column=1, padx=5, pady=8, sticky="ew")
         ctk.CTkButton(card, text="Przeglądaj", image=self.icon_folder, command=lambda: self.select_dir(self.mietki_rozlicz_entry), width=110, height=36, font=font_btn, fg_color="#333333", hover_color="#444444").grid(row=1, column=2, padx=15, pady=8)
 
@@ -79,18 +85,40 @@ class TabTworzenieMietkowMixin:
         ctk.CTkLabel(wsie_frame, text="(NAZWA i GMINA = nazwa obrębu, wpisywane automatycznie)",
                      font=ctk.CTkFont(size=11), text_color="#777777").grid(row=4, column=2, columnspan=2, padx=(0, 12), pady=4, sticky="w")
 
+        # --- CHECKBOX: USUWANIE WYDZIELEŃ BEZ WŁAŚCICIELI ---
+        self.krzyz_usun_puste_jrej_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            card, text="Usuń wydzielenia bez właścicieli (pomiń wiersze bez J. rej. przy wpisywaniu krzyżówek)",
+            variable=self.krzyz_usun_puste_jrej_var, font=ctk.CTkFont(family="Segoe UI", size=12),
+            fg_color="#8B0000", hover_color="#A52A2A"
+        ).grid(row=5, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="w")
+
+        # --- DWA PRZYCISKI ---
+        btn_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
+        btn_frame.grid(row=1, column=0, padx=20, pady=(5, 20), sticky="ew")
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
         self.mietki_start_btn = ctk.CTkButton(
-            scroll_frame, text="Generuj struktury i wstrzyknij bazy DBF", image=self.icon_start,
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            btn_frame, text="Generuj same mietki", image=self.icon_start,
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             fg_color="#0067C0", hover_color="#005A9E", height=44, corner_radius=6,
             command=self.start_tworzenie_mietkow_pipeline
         )
-        self.mietki_start_btn.grid(row=1, column=0, padx=20, pady=(5, 20), sticky="ew")
+        self.mietki_start_btn.grid(row=0, column=0, padx=(0, 8), sticky="ew")
+
+        self.mietki_krzyz_start_btn = ctk.CTkButton(
+            btn_frame, text="Generuj mietki i wpisz krzyżówki", image=self.icon_start,
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+            fg_color="#27ae60", hover_color="#219653", height=44, corner_radius=6,
+            command=self.start_mietki_i_krzyzowki_pipeline
+        )
+        self.mietki_krzyz_start_btn.grid(row=0, column=1, padx=(8, 0), sticky="ew")
 
     # ==========================================
-    # ZAKŁADKA: WPISANIE KRZYŻÓWEK (XLSX -> D*.DBF)
+    # PIPELINE 1: SAME MIETKI
     # ==========================================
-    def start_tworzenie_mietkow_pipeline(self):
+    def start_tworzenie_mietkow_pipeline(self, with_krzyzowki=False):
         baz_dir = self.mietki_bazowy_entry.get().strip() if hasattr(self, 'mietki_bazowy_entry') and self.mietki_bazowy_entry else ""
         rozl_dir = self.mietki_rozlicz_entry.get().strip() if hasattr(self, 'mietki_rozlicz_entry') and self.mietki_rozlicz_entry else ""
         out_dir = self.mietki_out_entry.get().strip() if self.mietki_out_entry else ""
@@ -105,7 +133,6 @@ class TabTworzenieMietkowMixin:
             messagebox.showwarning("Błąd", "Wybierz folder docelowy dla nowych obrębów.")
             return
 
-        # Pobieranie nazw wsi bezpośrednio z nazw plików XLS w folderze bazowym
         baz_path = Path(baz_dir)
         xls_files = [
             f.stem for f in baz_path.iterdir()
@@ -116,10 +143,8 @@ class TabTworzenieMietkowMixin:
             messagebox.showwarning("Błąd", "We wskazanym folderze XLS Ewidencji nie znaleziono żadnych plików, z których można by pobrać nazwy obrębów.")
             return
 
-        # Zostawiamy unikalne i posortowane nazwy (stemy plików bez rozszerzeń)
         names_list = sorted(list(set(xls_files)))
 
-        # Weryfikacja zasobu "pustego" folderu
         base_dir = get_resource_path("pusty")
         if not Path(base_dir).exists() or not Path(base_dir).is_dir():
             messagebox.showerror("Błąd", f"Nie znaleziono wbudowanego folderu 'pusty' w plikach programu!\nŚcieżka: {base_dir}")
@@ -143,9 +168,15 @@ class TabTworzenieMietkowMixin:
             self.log("[UWAGA] Pole 'Powiat' w danych WSIE.DBF jest puste — uzupełnij je, jeśli MIETEK go wymaga.")
         threading.Thread(
             target=self.run_tworzenie_mietkow_thread,
-            args=(base_dir, out_dir, names_list, baz_dir, rozl_dir, wsie_meta),
+            args=(base_dir, out_dir, names_list, baz_dir, rozl_dir, wsie_meta, with_krzyzowki),
             daemon=True
         ).start()
+
+    # ==========================================
+    # PIPELINE 2: MIETKI + KRZYŻÓWKI
+    # ==========================================
+    def start_mietki_i_krzyzowki_pipeline(self):
+        self.start_tworzenie_mietkow_pipeline(with_krzyzowki=True)
 
     def read_dbf(self, filename):
         """Odczytuje plik dBase III zwracając (fields, records).
@@ -251,10 +282,6 @@ class TabTworzenieMietkowMixin:
             rest = blocks[i + 1]
             lines = [line.strip() for line in rest.split('\n') if line.strip()]
 
-            # --- ROZBIJANIE LINII ZE ŚREDNIKAMI ---
-            # Często nazwisko i adres są w jednej linii oddzielone średnikiem:
-            # "JUREK TOMASZ; ZAGŁOBY 8 m.11;"
-            # Rozbijamy na średnikach i traktujemy jako osobne linie
             expanded_lines = []
             for line in lines:
                 if ';' in line:
@@ -264,7 +291,6 @@ class TabTworzenieMietkowMixin:
                 else:
                     expanded_lines.append(line)
             lines = expanded_lines
-            # ---------------------------------------
 
             names_temp = []
             addresses = []
@@ -275,16 +301,13 @@ class TabTworzenieMietkowMixin:
 
                 has_marker = bool(re.search(r'\[(OF|OP|PG)\]', line))
 
-                # --- LEPSZE WYKRYWANIE ADRESU ---
-                # Dodatkowe wzorce: numer domu (np. "ZAGŁOBY 8"), "m." (mieszkanie),
-                # kod pocztowy, ul., miejsc., ulica + numer
                 is_address = bool(
-                    re.search(r'\d{2}-\d{3}', line) or        # kod pocztowy
-                    'ul.' in line.lower() or                         # ul.
-                    'miejsc.' in line.lower() or                     # miejsc.
-                    re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or  # "8 m.11" lub "8 m. 11"
-                    re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or    # "8 m 11"
-                    re.search(r'^\D+\s+\d+\s*$', line) is not None         # "ZAGŁOBY 8" — słowo + sam numer
+                    re.search(r'\d{2}-\d{3}', line) or
+                    'ul.' in line.lower() or
+                    'miejsc.' in line.lower() or
+                    re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or
+                    re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or
+                    re.search(r'^\D+\s+\d+\s*$', line) is not None
                 )
 
                 if has_marker:
@@ -299,7 +322,6 @@ class TabTworzenieMietkowMixin:
                     else:
                         names_temp.append((line, False))
 
-            # Jeśli nie znaleziono adresu, przenosimy z końca listy nazwisk to co nie ma twardego znacznika osoby
             if not addresses:
                 while len(names_temp) > 1 and not names_temp[-1][1]:
                     addresses.insert(0, names_temp.pop()[0])
@@ -309,11 +331,9 @@ class TabTworzenieMietkowMixin:
             for j, name in enumerate(names):
                 addr = addresses[j] if j < len(addresses) else (addresses[-1] if addresses else "")
 
-                # --- ODWRÓCENIE FORMATU ADRESU ---
                 if ';' in addr:
                     parts = [p.strip() for p in addr.split(';')]
                     addr = " ".join(parts[::-1])
-                # ---------------------------------
                 addr = self.napraw_powtorzenia_adresu(addr)
 
                 try:
@@ -329,6 +349,7 @@ class TabTworzenieMietkowMixin:
                     'ADRES': str(addr)[:60].strip()
                 })
         return results
+
     def _parse_dbf_date(self, s):
         """Zamienia datę z pola GUI (np. '1.01.2023', '01.01.2023', '2023-01-01')
         na format dBase 'YYYYMMDD'. Zwraca '' gdy pusto/niepoprawnie."""
@@ -347,23 +368,17 @@ class TabTworzenieMietkowMixin:
         return {
             'NAZWA':   str(name)[:40],
             'WOJEW':   str(meta.get('WOJEW', ''))[:30],
-            'GMINA':   str(name)[:30],                       # auto = nazwa obrębu
+            'GMINA':   str(name)[:30],
             'STAN_NA': self._parse_dbf_date(meta.get('STAN_NA', '')),
             'OBOW_OD': self._parse_dbf_date(meta.get('OBOW_OD', '')),
             'OBOW_DO': self._parse_dbf_date(meta.get('OBOW_DO', '')),
             'NR_WSI':  str(meta.get('NR_WSI', '1')),
             'ROK_ZAL': str(meta.get('ROK_ZAL', ''))[:2],
             'POWIAT':  str(meta.get('POWIAT', ''))[:30],
-            # pozostałe pola (SPR, ZLC, ET1.., OCHR*, ZDR*, ZG*, PRZY*, SANITAR*, US*, EG*)
-            # celowo POMIJAMY -> write_dbf zapisze je jako PUSTE.
         }
 
     def napraw_powtorzenia_adresu(self, addr):
-        """Usuwa powtórzoną nazwę miejscowości w adresie.
-        Np. '64-412 BIAŁCZ BIAŁCZ 1' -> '64-412 BIAŁCZ 1'
-             '64-412 CHRZYPSKO WIELKIE CHRZYPSKO WIELKIE 1' -> '64-412 CHRZYPSKO WIELKIE 1'
-        Działa tylko, gdy adres zaczyna się od kodu pocztowego i powtórzony blok
-        stoi bezpośrednio przed numerem domu (więc nie psuje poprawnych adresów)."""
+        """Usuwa powtórzoną nazwę miejscowości w adresie."""
         if not addr:
             return addr
         s = addr.strip()
@@ -385,7 +400,6 @@ class TabTworzenieMietkowMixin:
         try:
             self.log(f"  [DBF] Odczyt ewidencji XLS: {Path(path_bazowy).name}")
 
-            # 1. Odczyt XLS sprawdzoną funkcją programu (łata scelone komórki i wyciąga Ls)
             tabela_xls, df_full = wczytaj_i_przetworz_wlascicieli(str(path_bazowy))
 
             if tabela_xls.empty:
@@ -394,7 +408,6 @@ class TabTworzenieMietkowMixin:
 
             self.log(f"  [DBF] Pomyślnie zlokalizowano {len(tabela_xls)} wydzieleń z lasem (Ls).")
 
-            # Bezpieczne czyszczenie J.rej. z ułamków (np. "12.0" -> "12")
             def clean_jrej(val):
                 v = str(val).strip()
                 if 'G' in v: v = v.split('G')[-1]
@@ -406,9 +419,7 @@ class TabTworzenieMietkowMixin:
 
             tabela_xls['J. rej. clean'] = tabela_xls['J. rej.'].apply(clean_jrej)
 
-            # 2. LOGIKA TRYBÓW
             if path_rozl:
-                # Moduł ROZLICZANIE (filtrowanie na podstawie pliku z rozliczonymi)
                 df_rozl = pd.read_excel(str(path_rozl))
                 rozl_jrej_col = next((c for c in df_rozl.columns if 'j. rej' in str(c).lower()), None)
 
@@ -419,22 +430,16 @@ class TabTworzenieMietkowMixin:
                 else:
                     matched_rows = tabela_xls
             else:
-                # Moduł NAZWISKA -> MIETEK (bez filtra, bierze wszystkich z ewidencji)
                 matched_rows = tabela_xls
 
-            # 3. CZYSZCZENIE Z DUPLIKATÓW
-            # Odrzucamy duplikaty po J.rej, żeby jeden właściciel był wpisany do MS-DOS tylko raz
             matched_rows = matched_rows.drop_duplicates(subset=['J. rej. clean'])
             self.log(f"  [DBF] Unikalnych rejestrów (właścicieli) gotowych do DBF: {len(matched_rows)}")
 
-            # 4. PARSOWANIE ADRESÓW I UDZIAŁÓW DO MS-DOS
             dbf_records = []
             for _, row in matched_rows.iterrows():
                 j_rej_val = row['J. rej. clean']
-                # Bezpieczne pobranie nazwiska, nawet jeśli w Excelu go brakuje
                 wlasciciel_text = str(row.get('Właściciel', 'Brak danych')).replace('nan', 'Brak danych')
 
-                # Funkcja rozbijająca na NAZWISKO, IMIE (udział), ADRES
                 recs = self.parse_wlasciciel(wlasciciel_text, j_rej_val)
                 dbf_records.extend(recs)
 
@@ -448,7 +453,7 @@ class TabTworzenieMietkowMixin:
             return []
 
     def run_tworzenie_mietkow_thread(self, base_dir_str, out_dir_str, names_list, baz_dir_str, rozl_dir_str=None,
-                                     wsie_meta=None):
+                                     wsie_meta=None, with_krzyzowki=False):
         try:
             self.update_status("Generowanie struktury MIETEK...", "#0078D7")
             base_dir = Path(base_dir_str)
@@ -494,7 +499,6 @@ class TabTworzenieMietkowMixin:
                                 for p in (list(target_dir.rglob("W*.DBF")) + list(target_dir.rglob("W*.dbf")) +
                                           list(target_dir.rglob("w*.DBF")) + list(target_dir.rglob("w*.dbf"))):
 
-                                    # KLUCZOWA POPRAWKA: Ignorujemy plik WSIE.DBF podczas szukania bazy właścicieli
                                     if p.stem.upper() == "WSIE":
                                         continue
 
@@ -543,8 +547,15 @@ class TabTworzenieMietkowMixin:
 
             self.update_status("Zakończono pomyślnie.", "#27ae60", animate=False)
             self.log(f"\n✅ Zakończono generowanie folderów. Utworzono: {stat_sukces}/{total}")
-            self.after(0,
-                       lambda: messagebox.showinfo("Sukces", f"Wygenerowano pomyślnie {stat_sukces} folderów MIETEK."))
+
+            # --- JEŚLI ZAZNACZONO KRZYŻÓWKI, URUCHOM AUTOMATYCZNIE ---
+            if with_krzyzowki and rozl_dir and out_dir:
+                self.log("\n" + "="*50)
+                self.log("[KRZYŻÓWKI] Automatyczne wpisywanie krzyżówek...")
+                self.run_krzyzowki_thread(str(rozl_dir), str(out_dir), self.krzyz_usun_puste_jrej_var.get())
+            else:
+                self.after(0,
+                           lambda: messagebox.showinfo("Sukces", f"Wygenerowano pomyślnie {stat_sukces} folderów MIETEK."))
 
         except InterruptedError:
             self.update_status("Przerwano", "#D83B01", animate=False)
@@ -556,4 +567,149 @@ class TabTworzenieMietkowMixin:
             self.running = False
             self.after(0, self.restore_all_buttons)
 
-    # UI dla nowej zakładki "NAZWISKA -> MIETEK"
+    # ==========================================
+    # WPISYWANIE KRZYŻÓWEK (D*.DBF)
+    # ==========================================
+    def run_krzyzowki_thread(self, xls_dir_str, mietki_dir_str, usun_puste_jrej=False):
+        try:
+            self.update_status("Wstrzykiwanie krzyżówek do plików D*.DBF...", "#0078D7")
+            xls_dir = Path(xls_dir_str)
+            mietki_dir = Path(mietki_dir_str)
+            xls_files = sorted([
+                f for f in xls_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in {".xls", ".xlsx"} and not f.name.startswith("~$")
+            ])
+            if not xls_files:
+                raise Exception("Brak plików Excel we wskazanym folderze.")
+
+            total = len(xls_files)
+            self.start_progress_tracking(total, "Wpisywanie krzyżówek")
+
+            dbf_fields = [
+                ('NRREJ', 'N', 5, 0),
+                ('NR_DZIAL', 'C', 9, 0),
+                ('POW', 'N', 9, 4),
+                ('POW_L_ZAL', 'N', 9, 4),
+                ('POW_L_NZAL', 'N', 8, 4),
+                ('POW_N_ZAL', 'N', 9, 4),
+                ('POW_INNE', 'N', 8, 4),
+                ('ODDZIAL', 'C', 7, 0),
+                ('PODODDZ', 'C', 3, 0),
+                ('ZM', 'C', 1, 0),
+                ('PREJ', 'N', 6, 0),
+            ]
+
+            stat_ok = 0
+            stat_brak_folderu = 0
+            stat_puste = 0
+
+            for idx, xls_path in enumerate(xls_files, start=1):
+                self.check_stop()
+                self.progress_current_file = xls_path.name
+
+                v_name = re.sub(r'(?i)_?rozliczone.*$', '', xls_path.stem).strip()
+                if not v_name:
+                    v_name = xls_path.stem
+                v_norm = re.sub(r'[\s_\-]', '', v_name.lower())
+
+                target_mietek = None
+                for folder in mietki_dir.iterdir():
+                    if folder.is_dir():
+                        f_norm = re.sub(r'[\s_\-]', '', folder.name.lower())
+                        if f_norm and f_norm == v_norm:
+                            target_mietek = folder
+                            break
+                if not target_mietek:
+                    self.log(f"  ⚠️ Pominięto {xls_path.name} — nie znaleziono folderu obrębu '{v_name}' w Mietkach.")
+                    stat_brak_folderu += 1
+                    self.set_progress(idx / total, current_file=xls_path.name, current=idx)
+                    continue
+
+                try:
+                    df = pd.read_excel(str(xls_path))
+                    if df.shape[1] < 6:
+                        self.log(f"  ❌ {xls_path.name}: plik ma mniej niż 6 kolumn — nie mogę odczytać kolumny F.")
+                        self.set_progress(idx / total, current_file=xls_path.name, current=idx)
+                        continue
+
+                    col_pow_name = df.columns[5]
+                    df_pow = pd.to_numeric(df.iloc[:, 5], errors='coerce')
+                    df_work = df.copy()
+                    df_work['__POW'] = df_pow
+                    df_filt = df_work[df_work['__POW'].notna()]
+
+                    if df_filt.empty:
+                        self.log(
+                            f"  ℹ️ {xls_path.name}: kolumna F ('{col_pow_name}') pusta — brak krzyżówek do wpisania.")
+                        stat_puste += 1
+                        self.set_progress(idx / total, current_file=xls_path.name, current=idx)
+                        continue
+
+                    records = []
+                    for _, row in df_filt.iterrows():
+                        try:
+                            nrrej_val = int(float(row.get('J. rej.', 0)))
+                        except Exception:
+                            nrrej_val = 0
+
+                        if usun_puste_jrej and nrrej_val == 0:
+                            continue
+
+                        nr_dz = str(row.get('nr_dz', '')).strip()
+                        litery = str(row.get('litery', ''))
+                        oddzial = "".join(ch for ch in litery if ch.isdigit())[:7]
+                        pododdz = "".join(ch for ch in litery if ch.isalpha())[:3]
+                        pow_val = row['__POW']
+                        records.append({
+                            'NRREJ': nrrej_val,
+                            'NR_DZIAL': nr_dz[:9],
+                            'POW': f"{float(pow_val):.4f}",
+                            'POW_L_ZAL': f"{float(pow_val):.4f}",
+                            'ODDZIAL': oddzial,
+                            'PODODDZ': pododdz,
+                        })
+
+                    d_dbfs = []
+                    seen = set()
+                    for p in (list(target_mietek.rglob("D*.DBF")) + list(target_mietek.rglob("D*.dbf")) +
+                              list(target_mietek.rglob("d*.DBF")) + list(target_mietek.rglob("d*.dbf"))):
+                        key = str(p).upper()
+                        if key not in seen:
+                            seen.add(key)
+                            d_dbfs.append(p)
+                    if d_dbfs:
+                        target_dbf = d_dbfs[0]
+                    else:
+                        sub = self._find_001_dir(target_mietek)
+                        if sub is None:
+                            sub = target_mietek / "WOL.001"
+                        sub.mkdir(parents=True, exist_ok=True)
+                        target_dbf = sub / "D0011019.DBF"
+                    self.write_dbf(str(target_dbf), dbf_fields, records)
+                    self.log(
+                        f"  ✅ {xls_path.name} → {target_mietek.name}/{target_dbf.name} "
+                        f"({len(records)} rekordów, kolumna F='{col_pow_name}')"
+                    )
+                    stat_ok += 1
+                except Exception as e:
+                    self.log(f"  ❌ Błąd przetwarzania {xls_path.name}: {e}")
+
+                self.set_progress(idx / total, current_file=xls_path.name, current=idx)
+
+            self.update_status("Zakończono pomyślnie.", "#27ae60", animate=False)
+            self.log(
+                f"\n✅ KRZYŻÓWKI: zapisano {stat_ok}, puste {stat_puste}, "
+                f"brak folderu {stat_brak_folderu} (z {total})."
+            )
+            self.after(
+                0, lambda: messagebox.showinfo("Sukces", f"Wstrzyknięto krzyżówki do {stat_ok} obrębów.")
+            )
+        except InterruptedError:
+            self.update_status("Przerwano", "#D83B01", animate=False)
+            self.log("\nZADANIE PRZERWANE PRZEZ UŻYTKOWNIKA.")
+        except Exception as e:
+            self.log(traceback.format_exc())
+            self.update_status("Błąd", "#D83B01", animate=False)
+        finally:
+            self.running = False
+            self.after(0, self.restore_all_buttons)
