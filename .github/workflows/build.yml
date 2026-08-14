@@ -29,31 +29,8 @@ jobs:
         pip install pyinstaller
 
     - name: Build EXE
-      run: |
-        pyinstaller --noconfirm --onefile --windowed \
-          --icon "kombajn.ico" \
-          --name "KombajnLesnyPRO" \
-          --add-data "STR_TYT.docx;." \
-          --add-data "STR_TYT_TYLKO-ISL-2.docx;." \
-          --add-data "Skroty.docx;." \
-          --add-data "BIAŁYNIN KRASÓWKA.xlsx;." \
-          --add-data "config;config" \
-          --add-data "pusty;pusty" \
-          --collect-all customtkinter \
-          --collect-all CTkToolTip \
-          --collect-all pandas \
-          --collect-all numpy \
-          --collect-all fitz \
-          --collect-all openpyxl \
-          --collect-all docx \
-          --collect-all PIL \
-          --collect-all pypdf \
-          --collect-all pyodbc \
-          --hidden-import win32com.client \
-          --hidden-import pythoncom \
-          --hidden-import pyautogui \
-          --collect-submodules app \
-          main.py
+      shell: cmd
+      run: pyinstaller --noconfirm --onefile --windowed --icon "kombajn.ico" --name "KombajnLesnyPRO" --add-data "STR_TYT.docx;." --add-data "STR_TYT_TYLKO-ISL-2.docx;." --add-data "Skroty.docx;." --add-data "BIAŁYNIN KRASÓWKA.xlsx;." --add-data "config;config" --add-data "pusty;pusty" --collect-all customtkinter --collect-all CTkToolTip --collect-all pandas --collect-all numpy --collect-all fitz --collect-all openpyxl --collect-all docx --collect-all PIL --collect-all pypdf --collect-all pyodbc --hidden-import win32com.client --hidden-import pythoncom --hidden-import pyautogui --collect-submodules app main.py
 
     - name: Upload EXE to release
       uses: softprops/action-gh-release@v2
