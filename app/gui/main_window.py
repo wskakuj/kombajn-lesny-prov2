@@ -26,7 +26,7 @@ from tkinter import ttk
 from PIL import Image, ImageDraw
 
 from app.config import (
-    CURRENT_VERSION, COLORS, ENCODING, HISTORY_FILE, MARGINS_FILE,
+    CURRENT_VERSION, COLORS, ENCODING, HISTORY_FILE, MARGINS_FILE, SETTINGS_FILE,
     TERRITORY_DATA, PDF_ORDER_TEMPLATES, EXCEL_SHEET_DEFAULTS,
     kill_orphan_office_processes, load_margins, save_margins,
     add_tooltip,
@@ -299,6 +299,34 @@ class ModernApp(
         entry_widget.delete(0, "end")
         entry_widget.insert(0, path)
         self.add_to_history(path)
+
+    def load_settings(self):
+        """Wczytuje zapisane ustawienia (pola WSIE.DBF, foldery, checkboxy)."""
+        if SETTINGS_FILE.exists():
+            try:
+                return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def save_settings(self, settings):
+        """Zapisuje ustawienia do pliku."""
+        try:
+            SETTINGS_FILE.write_text(
+                json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            print(f"[INFO] Błąd zapisu ustawień: {e}")
+
+    def get_setting(self, key, default=""):
+        """Pobiera pojedynczą wartość z ustawień."""
+        return self.load_settings().get(key, default)
+
+    def set_setting(self, key, value):
+        """Ustawia pojedynczą wartość w ustawieniach."""
+        settings = self.load_settings()
+        settings[key] = value
+        self.save_settings(settings)
 
     def clear_history(self):
         self.save_history([])
@@ -1149,6 +1177,13 @@ class ModernApp(
             entry_widget.delete(0, "end")
             entry_widget.insert(0, folder)
             self.add_to_history(folder)
+            entry_name = None
+            for attr in dir(self):
+                if getattr(self, attr, None) is entry_widget:
+                    entry_name = attr
+                    break
+            if entry_name:
+                self.set_setting(f"folder_{entry_name}", folder)
 
     def select_file(self, entry_widget, filetypes):
         file_path = filedialog.askopenfilename(filetypes=filetypes)
