@@ -194,24 +194,22 @@ class TabExcelMixin:
 
         self.remove_owners_var = ctk.BooleanVar(value=False)
         self.cb_remove_owners = ctk.CTkCheckBox(
-            delete_options_frame, text="Usuń Właścicieli (wartość 2 w 9. wierszu)", variable=self.remove_owners_var,
+            delete_options_frame, text="Usuń Właścicieli (Nazwisko, Adres, Współwłaśc., Udział)", variable=self.remove_owners_var,
             font=font_sheet, fg_color="#8B0000", hover_color="#A52A2A"
         )
         self.cb_remove_owners.grid(row=1, column=0, sticky="w", padx=(0, 20))
 
         self.remove_ls_var = ctk.BooleanVar(value=False)
         self.cb_remove_ls = ctk.CTkCheckBox(
-            delete_options_frame, text="Usuń LS (wartość 3 w 9. wierszu)", variable=self.remove_ls_var, font=font_sheet,
+            delete_options_frame, text="Usuń Użytek ew.", variable=self.remove_ls_var, font=font_sheet,
             fg_color="#8B0000", hover_color="#A52A2A"
         )
         self.cb_remove_ls.grid(row=1, column=1, sticky="w")
 
-        # === PRZYCISKI ===
-        # ZMIANA: Zamiast 'parent', dolny panel z przyciskami podpinamy pod 'scroll_frame'
+        # === PRZYCISK ===
         btn_frame = ctk.CTkFrame(scroll_frame, fg_color="transparent")
-        btn_frame.grid(row=1, column=0, padx=20, pady=(5, 20), sticky="ew")  # Zwiększony dolny margines dla wygody
+        btn_frame.grid(row=1, column=0, padx=20, pady=(5, 20), sticky="ew")
         btn_frame.grid_columnconfigure(0, weight=1)
-        btn_frame.grid_columnconfigure(1, weight=1)
 
         self.excel_start_btn = ctk.CTkButton(
             btn_frame,
@@ -224,19 +222,7 @@ class TabExcelMixin:
             corner_radius=6,
             command=self.start_excel_pipeline,
         )
-        self.excel_start_btn.grid(row=0, column=0, padx=(0, 5), sticky="ew")
-
-        self.remove_cols_btn = ctk.CTkButton(
-            btn_frame,
-            text="Usuń kolumny (wg zaznaczenia)",
-            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
-            fg_color="#8B0000",
-            hover_color="#A52A2A",
-            height=44,
-            corner_radius=6,
-            command=self.start_remove_columns_pipeline,
-        )
-        self.remove_cols_btn.grid(row=0, column=1, padx=(5, 0), sticky="ew")
+        self.excel_start_btn.grid(row=0, column=0, sticky="ew")
 
     def start_excel_pipeline(self):
         folder = (
@@ -295,14 +281,18 @@ class TabExcelMixin:
                 getattr(self, "include_subfolders_var", None)
                 and self.include_subfolders_var.get()
         )
+        # Pobierz stan checkboxów usuwania kolumn
+        remove_owners = self.remove_owners_var.get()
+        remove_ls = self.remove_ls_var.get()
+
         threading.Thread(
             target=self.run_excel_thread,
-            args=(folder, output_folder, font_config, include_subfolders),
+            args=(folder, output_folder, font_config, include_subfolders, remove_owners, remove_ls),
             daemon=True,
         ).start()
 
     def run_excel_thread(
-            self, folder_str, output_folder_str, font_config, include_subfolders
+            self, folder_str, output_folder_str, font_config, include_subfolders, remove_owners=False, remove_ls=False
     ):
         pythoncom.CoInitialize()
         excel = None
@@ -341,6 +331,41 @@ class TabExcelMixin:
                         shutil.copy2(file_path, target_path)
                     wb = excel.Workbooks.Open(str(target_path))
                     self.process_excel_workbook(excel, wb, font_config)
+
+                    # --- USUWANIE KOLUMN (jeśli zaznaczono) ---
+                    if remove_owners or remove_ls:
+                        # Nazwy nagłówków do wyszukania w wierszach 1-9
+                        owner_headers = ["nazwisko i imię", "adres właściciela", "współwłaścicieli", "udział"]
+                        ls_headers = ["użytek ew"]
+                        for sheet_name in ["Sheet4", "REJ"]:
+                            try:
+                                ws = self.get_sheet_if_exists(wb, sheet_name)
+                                if ws:
+                                    cols_to_delete = set()
+                                    # Przeszukaj wiersze 1-9, wszystkie kolumny
+                                    for row in range(1, 10):
+                                        for col in range(1, 51):
+                                            cell_val = ws.Cells(row, col).Value
+                                            if cell_val is not None:
+                                                val_str = str(cell_val).strip().lower()
+                                                if remove_owners:
+                                                    for h in owner_headers:
+                                                        if h in val_str:
+                                                            cols_to_delete.add(col)
+                                                            break
+                                                if remove_ls:
+                                                    for h in ls_headers:
+                                                        if h in val_str:
+                                                            cols_to_delete.add(col)
+                                                            break
+                                    # Usuń kolumny od końca (żeby nie popsuć indeksów)
+                                    for col in sorted(cols_to_delete, reverse=True):
+                                        ws.Columns(col).Delete()
+                                        self.log(f"  -> Usunięto kolumnę {col} z arkusza {sheet_name}")
+                            except Exception as e:
+                                self.log(f"  [Ostrzeżenie] Problem z usuwaniem kolumn w {sheet_name}: {e}")
+                    # -------------------------------------------
+
                     wb.Close(SaveChanges=True)
                 except Exception as e:
                     self.log(f"Błąd pliku {file_path.name}: {e}")
@@ -373,6 +398,24 @@ class TabExcelMixin:
         self.delete_unwanted_sheets(wb)
         self.setup_printing_and_styles(wb, excel)
         self.apply_font_sizes(wb, font_config)
+
+        # --- NAPRAWA LITERÓWKI W REJESTR1 ---
+        for sheet_name in ["Sheet4", "REJ"]:
+            ws = None
+            try:
+                ws = wb.Sheets(sheet_name)
+            except Exception:
+                continue
+            if ws is not None:
+                try:
+                    found = ws.Cells.Find("Wskazania godspodarcze")
+                    while found:
+                        found.Value = "Wskazania gospodarcze"
+                        found = ws.Cells.FindNext(found)
+                except Exception:
+                    pass
+        # -------------------------------------
+
         try:
             wb.Worksheets(1).Select()
         except Exception:

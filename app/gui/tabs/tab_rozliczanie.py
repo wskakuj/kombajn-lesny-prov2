@@ -448,18 +448,31 @@ class TabRozliczanieMixin:
                             tabela_ubylo.to_excel(
                                 writer, sheet_name="UBYLO", index=False, startrow=1)
 
-                        # Kolorowanie kolumny "TU POWSTANĄ DANE" (kolumna 6)
+                        # Formatowanie kolumny "ROZLICZONE" (kolumna 6)
                         worksheet_glowna = writer.sheets["Tabela_Glowna"]
+
+                        # Nagłówek: pogrubiony + szersza kolumna
+                        from openpyxl.utils import get_column_letter
+                        col_letter = get_column_letter(6)
+                        worksheet_glowna.column_dimensions[col_letter].width = 18
+                        header_cell = worksheet_glowna.cell(row=1, column=6)
+                        header_cell.font = Font(bold=True, size=12)
+                        header_cell.alignment = Alignment(horizontal="center")
+
                         for row_idx, row in enumerate(tabela_gotowa.itertuples(), start=2):
                             bg_col = getattr(row, "bg_color", "")
                             f_col = getattr(row, "font_color", "")
                             cell = worksheet_glowna.cell(row=row_idx, column=6)
+                            # Pogrubiona czcionka dla wartości
+                            bold_font = Font(bold=True)
                             if pd.notna(bg_col) and bg_col != "":
                                 cell.fill = PatternFill(
                                     start_color=str(bg_col), end_color=str(bg_col),
                                     fill_type="solid")
                             if pd.notna(f_col) and f_col != "":
-                                cell.font = Font(color=str(f_col))
+                                cell.font = Font(color=str(f_col), bold=True)
+                            else:
+                                cell.font = bold_font
 
                         if "PRZYBYLO" in writer.sheets:
                             formatuj_arkusz_raportowy(
@@ -624,10 +637,9 @@ class TabRozliczanieMixin:
             excel.DisplayAlerts = False
             total = len(files)
 
-            # Lista wartości do usunięcia
-            values_to_delete = []
-            if remove_owners: values_to_delete.append(2)
-            if remove_ls: values_to_delete.append(3)
+            # Nazwy nagłówków do wyszukania w wierszach 1-9
+            owner_headers = ["nazwisko i imię", "adres właściciela", "współwłaścicieli", "udział"]
+            ls_headers = ["użytek ew"]
 
             self.start_progress_tracking(total, "Usuwanie kolumn")
 
@@ -651,26 +663,30 @@ class TabRozliczanieMixin:
                     wb = excel.Workbooks.Open(str(target_path))
                     wb.CheckCompatibility = False
 
-                    # --- LOGIKA USUWANIA KOLUMN ---
+                    # --- LOGIKA USUWANIA KOLUMN (po nazwach nagłówków) ---
                     for sheet_name in ["Sheet4", "REJ"]:
                         try:
                             ws = self.get_sheet_if_exists(wb, sheet_name)
                             if ws:
-                                # Skrypt sprawdza kolumny od 50 w dół, do 1.
-                                # Robimy to od tyłu, żeby przesunięcie kolumn (po usunięciu)
-                                # nie popsuło indeksów dla pozostałych kolumn.
-                                for col in range(50, 0, -1):
-                                    cell_val = ws.Cells(9, col).Value
-                                    if cell_val is not None:
-                                        try:
-                                            # Rzutujemy ew. wartość float 2.0 na integer 2
-                                            val_int = int(float(cell_val))
-                                            if val_int in values_to_delete:
-                                                ws.Columns(col).Delete()
-                                                self.log(
-                                                    f"  -> Usunięto kolumnę {col} (znaleziono wartość {val_int} w wierszu 9) z arkusza {sheet_name}")
-                                        except Exception:
-                                            pass
+                                cols_to_delete = set()
+                                for row in range(1, 10):
+                                    for col in range(1, 51):
+                                        cell_val = ws.Cells(row, col).Value
+                                        if cell_val is not None:
+                                            val_str = str(cell_val).strip().lower()
+                                            if remove_owners:
+                                                for h in owner_headers:
+                                                    if h in val_str:
+                                                        cols_to_delete.add(col)
+                                                        break
+                                            if remove_ls:
+                                                for h in ls_headers:
+                                                    if h in val_str:
+                                                        cols_to_delete.add(col)
+                                                        break
+                                for col in sorted(cols_to_delete, reverse=True):
+                                    ws.Columns(col).Delete()
+                                    self.log(f"  -> Usunięto kolumnę {col} z arkusza {sheet_name}")
                         except Exception as e:
                             self.log(f"  [Ostrzeżenie] Problem z usunięciem w {sheet_name}: {e}")
 

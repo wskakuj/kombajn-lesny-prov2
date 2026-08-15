@@ -106,18 +106,26 @@ class TabPdfMixin:
         return count
 
     def task_merge_pdfs(self, in_dir, out_dir, mode_key="ALL"):
-        pdf_dirs = set(p.parent for p in in_dir.rglob("*.pdf"))
-        if not pdf_dirs:
+        # --- GRUPOWANIE PDF-ów PO NAZWIE WSI (pierwszy folder w ścieżce) ---
+        village_pdfs = {}
+        for p in in_dir.rglob("*.pdf"):
+            rel = p.relative_to(in_dir)
+            village = rel.parts[0] if len(rel.parts) > 1 else p.stem
+            if village not in village_pdfs:
+                village_pdfs[village] = []
+            village_pdfs[village].append(p)
+
+        if not village_pdfs:
             return 0
 
-        # --- KONTROLA KOMPLETNOŚCI ---
+        # --- KONTROLA KOMPLETNOŚCI (per wieś, nie per podfolder) ---
         warnings = []
-        for folder in pdf_dirs:
-            pdfs = [p.name.lower() for p in folder.iterdir() if p.suffix.lower() == ".pdf"]
-            has_title = any(template_matches(PDF_ORDER_TEMPLATES[0], p) for p in pdfs)
-            has_optax = any(template_matches(PDF_ORDER_TEMPLATES[3], p) for p in pdfs)
-            has_opis = any(template_matches(PDF_ORDER_TEMPLATES[1], p) for p in pdfs)
-            has_rej = any(template_matches(PDF_ORDER_TEMPLATES[7], p) for p in pdfs)
+        for village, pdfs in sorted(village_pdfs.items()):
+            pdf_names = [p.name.lower() for p in pdfs]
+            has_title = any(template_matches(PDF_ORDER_TEMPLATES[0], n) for n in pdf_names)
+            has_optax = any(template_matches(PDF_ORDER_TEMPLATES[3], n) for n in pdf_names)
+            has_opis = any(template_matches(PDF_ORDER_TEMPLATES[1], n) for n in pdf_names)
+            has_rej = any(template_matches(PDF_ORDER_TEMPLATES[7], n) for n in pdf_names)
 
             missing = []
             if not has_title: missing.append("STR_TYT")
@@ -125,38 +133,36 @@ class TabPdfMixin:
             if not has_rej: missing.append("REJESTR")
 
             if missing:
-                warnings.append(f"• Wieś {folder.name.upper()}: brak -> {', '.join(missing)}")
+                warnings.append(f"• Wieś {village.upper()}: brak -> {', '.join(missing)}")
 
         if warnings:
             self.log("[KONTROLA] Wykryto braki w folderach do scalenia. Oczekiwanie na decyzję...")
             if not self.show_validation_window_sync("Wykryto brakujące pliki (niektóre wsie nie są kompletne):",
                                                     warnings):
                 raise InterruptedError("Operacja scalania przerwana przez użytkownika.")
-        # -----------------------------
+        # -------------------------------------------------------------
 
         count = 0
-        total_dirs = len(pdf_dirs)
-        self.start_progress_tracking(total_dirs, "Scalanie PDF")
+        total_villages = len(village_pdfs)
+        self.start_progress_tracking(total_villages, "Scalanie PDF")
         template_keys = get_saved_template_order(in_dir, mode_key)
 
-        for idx_dir, folder in enumerate(pdf_dirs, start=1):
+        for idx, (village, pdfs) in enumerate(sorted(village_pdfs.items()), start=1):
             self.check_stop()
-            self.set_progress((idx_dir - 1) / total_dirs if total_dirs else 1, current_file=folder.name, current=idx_dir - 1)
-            pdfs = sorted([p for p in folder.iterdir() if p.suffix.lower() == ".pdf"])
+            self.set_progress((idx - 1) / total_villages if total_villages else 1, current_file=village, current=idx - 1)
 
             ordered_pdfs = build_ordered_pdfs_from_templates(pdfs, template_keys)
             if not ordered_pdfs:
                 continue
 
-            target_dir = out_dir / folder.relative_to(in_dir)
+            target_dir = out_dir / village
             target_dir.mkdir(parents=True, exist_ok=True)
-            target = target_dir / f"{folder.name}_scalony.pdf"
+            target = target_dir / f"{village}_scalony.pdf"
 
             writer = PdfWriter()
             current_page = 0
             try:
                 for pdf in ordered_pdfs:
-                    # Szukamy przyjaznej nazwy dla zakładki (Bookmarks)
                     friendly_name = pdf.stem
                     for tpl in PDF_ORDER_TEMPLATES:
                         if template_matches(tpl, pdf.name):
@@ -166,28 +172,24 @@ class TabPdfMixin:
                     reader = PdfReader(str(pdf))
                     num_pages = len(reader.pages)
 
-                    # --- TUTAJ BYŁ BŁĄD. Zamiast writer.append(reader) robimy tak: ---
                     for page in reader.pages:
                         writer.add_page(page)
-                    # ------------------------------------------------------------------
 
                     writer.add_outline_item(friendly_name, current_page)
                     current_page += num_pages
 
-                    # --- NOWE: WSTRZYKIWANIE METADANYCH ---
                 writer.add_metadata({
-                    "/Title": f"UPUL - {folder.name.upper()}",
+                    "/Title": f"UPUL - {village.upper()}",
                     "/Author": "Agencja Cezar",
                     "/Creator": "Kombajn Leśny PRO",
                     "/Producer": "Kombajn Leśny PRO"
                 })
-                # --------------------------------------
 
                 with open(target, "wb") as f_out:
                     writer.write(f_out)
                 self.log(f"Połączono: {target.name}")
                 count += 1
-                self.set_progress(idx_dir / total_dirs if total_dirs else 1, current_file=folder.name, current=idx_dir)
+                self.set_progress(idx / total_villages if total_villages else 1, current_file=village, current=idx)
             except Exception as e:
                 self.log(f"Błąd przy {target.name}: {e}")
             finally:

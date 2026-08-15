@@ -338,18 +338,22 @@ class TabAllMixin:
             self.log(f"[SKROTY] Nieobsługiwany format: {ext}")
             return 0
 
-        village_dirs = [d for d in pdf_dir.iterdir() if d.is_dir()]
+        # Znajdź wszystkie foldery które zawierają pliki PDF (oprócz skroty.pdf)
+        pdf_folders = set()
+        for p in pdf_dir.rglob("*.pdf"):
+            if p.name.lower() != "skroty.pdf":
+                pdf_folders.add(p.parent)
+
         count = 0
 
-        # Zabezpieczenie przed kopiowaniem "pustki"
         if skroty_pdf_to_copy is not None:
-            for v_dir in village_dirs:
-                target_skroty = v_dir / "skroty.pdf"
+            for folder in pdf_folders:
+                target_skroty = folder / "skroty.pdf"
                 try:
                     shutil.copy2(skroty_pdf_to_copy, target_skroty)
                     count += 1
                 except Exception as e:
-                    self.log(f"[SKROTY] Błąd kopiowania do {v_dir.name}: {e}")
+                    self.log(f"[SKROTY] Błąd kopiowania do {folder.name}: {e}")
 
         if temp_skroty_pdf and temp_skroty_pdf.exists():
             try:
@@ -358,6 +362,26 @@ class TabAllMixin:
                 pass
 
         return count
+
+    def _flatten_001_subfolders(self, root_dir):
+        """Wyciąga pliki z podfolderów *.001 do folderu nadrzędnego i usuwa puste podfoldery."""
+        root_dir = Path(root_dir)
+        if not root_dir.exists():
+            return
+        for sub in sorted(root_dir.rglob("*.001"), reverse=True):
+            if not sub.is_dir():
+                continue
+            for f in sub.iterdir():
+                if f.is_file():
+                    target = sub.parent / f.name
+                    if target.exists():
+                        target.unlink()
+                    shutil.move(str(f), str(target))
+            try:
+                sub.rmdir()
+                self.log(f"  [SPŁASZCZONO] {sub.parent.name}/{sub.name} → {sub.parent.name}/")
+            except Exception:
+                pass
 
     def run_logic_thread(self, src_str, out_str, mode, remove_names, margins_dict=None):
         # --- INICJALIZACJA ZMIENNYCH ---
@@ -386,12 +410,14 @@ class TabAllMixin:
                 self.update_dashboard(0, "running", "Czyszczenie...")
                 self.check_stop()
                 c1 = self.task_clean_txt(in_root, dir_01)
+                self._flatten_001_subfolders(dir_01)
                 self.update_dashboard(0, "done", f"{c1} plików")
                 self.set_progress(0.15)
 
                 self.update_dashboard(1, "running", "Kompilacja...")
                 self.check_stop()
                 self.task_word_processing_subprocess(dir_01, dir_02, remove_names, margins_dict=margins_dict)
+                self._flatten_001_subfolders(dir_02)
                 self.update_dashboard(1, "done", "Gotowe")
                 self.set_progress(0.30)
 
@@ -417,6 +443,7 @@ class TabAllMixin:
                 self.update_dashboard(2, "running", "Konwersja...")
                 self.check_stop()
                 c3 = self.task_convert_to_pdf(dir_02, dir_03)
+                self._flatten_001_subfolders(dir_03)
                 self.update_dashboard(2, "done", f"{c3} plików")
                 self.set_progress(0.60)
 
@@ -471,6 +498,8 @@ class TabAllMixin:
                 self.task_word_processing_subprocess(
                     dir_01, dir_02, remove_names, file_filter, margins_dict=margins_dict
                 )
+                self._flatten_001_subfolders(dir_01)
+                self._flatten_001_subfolders(dir_02)
 
             elif mode == "PDF":
                 dir_03, dir_04, dir_05 = (
@@ -492,6 +521,7 @@ class TabAllMixin:
                     )
                 )
                 self.task_convert_to_pdf(in_root, dir_03)
+                self._flatten_001_subfolders(dir_03)
                 self.set_progress(0.4 if do_merge else 1.0)
                 if do_merge:
                     self.check_stop()

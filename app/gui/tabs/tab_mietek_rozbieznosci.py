@@ -341,6 +341,8 @@ class TabMietekRozbieznosciMixin:
                             match_full = df_full[
                                 (df_full['nr_dz'] == nr_dz) & (df_full['J. rej. norm'] == j_rej_norm)
                                 ]
+                            if match_full.empty:
+                                match_full = df_full[df_full['nr_dz'] == nr_dz]
                             if not match_full.empty:
                                 if pd.isna(j_rej):
                                     j_rej = match_full.iloc[0]['J. rej.']
