@@ -86,7 +86,7 @@ def wczytaj_i_przetworz_wlascicieli(sciezka_do_pliku):
         cols_full.append('Właściciel')
 
     df_full = df[cols_full].drop_duplicates(
-        'nr_dz').copy() if 'nr_dz' in df.columns and 'Pow. działki' in df.columns else pd.DataFrame()
+        ['nr_dz', 'J. rej.']).copy() if 'nr_dz' in df.columns and 'Pow. działki' in df.columns else pd.DataFrame()
     # ---------------------------------------------------------------
 
     if not df_full.empty:
@@ -199,7 +199,7 @@ def polacz_xls_i_val(df_xls, df_full, df_val):
     df_out['nr_dz'] = df_merged['nr_dz']
     df_out['litery'] = df_merged['litera']
     df_out['pow geo'] = df_merged['pow geo']
-    df_out['TU POWSTANĄ DANE'] = np.nan
+    df_out['ROZLICZONE'] = np.nan
     df_out['Kolumna_G'] = ""
     df_out['nr_dz_ewid'] = df_merged['nr_dz']
     df_out['pow ls'] = df_merged['pow ls']
@@ -246,7 +246,7 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
             df.at[idx, 'font_color'] = df_font
 
             if is_new_forest:
-                df.at[idx, 'TU POWSTANĄ DANE'] = aktualna_pow
+                df.at[idx, 'ROZLICZONE'] = aktualna_pow
                 continue
 
             if nadmiar_sciezka:
@@ -254,29 +254,29 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
                     reszta = float(pow_docelowa) - suma_przepisanych
                     if reszta > 0:
                         wartosc = min(reszta, aktualna_pow)
-                        df.at[idx, 'TU POWSTANĄ DANE'] = round(wartosc, 4)
+                        df.at[idx, 'ROZLICZONE'] = round(wartosc, 4)
                         suma_przepisanych += wartosc
                     else:
-                        df.at[idx, 'TU POWSTANĄ DANE'] = 0.0000
+                        df.at[idx, 'ROZLICZONE'] = 0.0000
                 else:
-                    df.at[idx, 'TU POWSTANĄ DANE'] = aktualna_pow
+                    df.at[idx, 'ROZLICZONE'] = aktualna_pow
             else:
                 if pd.notna(pow_ewid) and suma_geo != 0:
                     nowa = (aktualna_pow / suma_geo) * float(pow_ewid)
                     zaokr = round(nowa, 4)
-                    df.at[idx, 'TU POWSTANĄ DANE'] = zaokr if zaokr != 0 else aktualna_pow
+                    df.at[idx, 'ROZLICZONE'] = zaokr if zaokr != 0 else aktualna_pow
                 else:
-                    df.at[idx, 'TU POWSTANĄ DANE'] = aktualna_pow
+                    df.at[idx, 'ROZLICZONE'] = aktualna_pow
 
     # 2. DOCIĄGANIE RÓŻNIC ZAOKRĄGLEŃ
     for (dz, j_rej), group in df.groupby(['nr_dz', 'J. rej.'], sort=False, dropna=False):
         pow_ewid = group['pow ls'].iloc[0]
         pow_docelowa = group['pow dz'].iloc[0]
 
-        valid_indices = group[group['TU POWSTANĄ DANE'].notna()].index
+        valid_indices = group[group['ROZLICZONE'].notna()].index
         if len(valid_indices) == 0:
             continue
-        suma_f = df.loc[valid_indices, 'TU POWSTANĄ DANE'].sum()
+        suma_f = df.loc[valid_indices, 'ROZLICZONE'].sum()
         roznica = 0.0
         if pd.notna(pow_docelowa) and str(pow_docelowa).strip() != "":
             pow_j = float(pow_docelowa)
@@ -290,13 +290,13 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
                 roznica = pow_i - suma_f
         if roznica != 0:
             ostatni_wiersz = valid_indices[-1]
-            df.at[ostatni_wiersz, 'TU POWSTANĄ DANE'] = round(
-                df.at[ostatni_wiersz, 'TU POWSTANĄ DANE'] + roznica, 4)
+            df.at[ostatni_wiersz, 'ROZLICZONE'] = round(
+                df.at[ostatni_wiersz, 'ROZLICZONE'] + roznica, 4)
 
     # 3. SZUM -> RÓŻOWY
     rows_to_drop = []
     for idx in df.index:
-        val = df.at[idx, 'TU POWSTANĄ DANE']
+        val = df.at[idx, 'ROZLICZONE']
         pow_ewid = df.at[idx, 'pow ls']
         if pd.notna(val) and val <= 0.004:
             if pd.isna(pow_ewid) or str(pow_ewid).strip() == "":
@@ -315,7 +315,7 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
         for dz, group in df.groupby('nr_dz', sort=False):
             # Unikalne kontury dla całej działki, aby uniknąć zdublowania sumy
             unikalne_geo = group.drop_duplicates(subset=['litery'])
-            suma_f = unikalne_geo['TU POWSTANĄ DANE'].sum() if not unikalne_geo.empty else 0.0
+            suma_f = unikalne_geo['ROZLICZONE'].sum() if not unikalne_geo.empty else 0.0
 
             pow_ewid = group['pow ls'].iloc[0]
             pow_docelowa = group['pow dz'].iloc[0]
@@ -325,7 +325,7 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
 
             if roznica > 0:
                 for idx in group.index:
-                    if df.at[idx, 'bg_color'] != 'FFB6C1' and pd.notna(df.at[idx, 'TU POWSTANĄ DANE']):
+                    if df.at[idx, 'bg_color'] != 'FFB6C1' and pd.notna(df.at[idx, 'ROZLICZONE']):
                         df.at[idx, 'bg_color'] = '00FF00'
                 przybylo_data.append({
                     'J. rej.': j_rej, 'nr działki': dz,

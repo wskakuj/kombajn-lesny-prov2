@@ -90,9 +90,12 @@ def run_word_worker(in_dir_str, out_dir_str, remove_names, file_filter=None, mar
                 text = text.replace('AGENCJA "CEZAR" "CEZAR"', 'AGENCJA "CEZAR"')
                 text = text.replace('Rejestr ieli',
                                     'Rejestr działek leśnych i gruntów do zalesienia wg. właścicieli')
-                text = text.replace("Wskazania godspodarcze", " Wskazania gospodarcze")
                 text = re.sub(r'E\s*$', '', text)
             # --------------------------------------------------------------------
+
+            # --- NAPRAWA LITERÓWKI — ZAWSZE (niezależnie od remove_names) ---
+            text = text.replace("Wskazania godspodarcze", "Wskazania gospodarcze")
+            # ----------------------------------------------------------------
 
             doc = Document()
 
