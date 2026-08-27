@@ -4,7 +4,7 @@ Kombajn Leśny PRO — Mixin: TabPdfMixin
 
 import customtkinter as ctk
 import time
-import fitz
+import pymupdf as fitz
 from pypdf import PdfWriter
 from pypdf import PdfReader
 import win32com.client
@@ -106,26 +106,36 @@ class TabPdfMixin:
         return count
 
     def task_merge_pdfs(self, in_dir, out_dir, mode_key="ALL"):
-        # --- GRUPOWANIE PDF-ów PO NAZWIE WSI (pierwszy folder w ścieżce) ---
-        village_pdfs = {}
-        for p in in_dir.rglob("*.pdf"):
-            rel = p.relative_to(in_dir)
-            village = rel.parts[0] if len(rel.parts) > 1 else p.stem
-            if village not in village_pdfs:
-                village_pdfs[village] = []
-            village_pdfs[village].append(p)
+        # INTELIGENTNY WYBÓR TRYBU: Jedna wieś vs Wiele wsi
+        direct_pdfs = list(in_dir.glob("*.pdf"))
 
-        if not village_pdfs:
+        if direct_pdfs:
+            # TRYB JEDNEJ WSI (pliki leżą bezpośrednio w głównym folderze)
+            pdf_dirs = {in_dir}
+        else:
+            # TRYB WIELU WSI (szukamy plików tylko w podfolderach)
+            pdf_dirs = set(p.parent for p in in_dir.rglob("*.pdf"))
+
+        if not pdf_dirs:
             return 0
 
-        # --- KONTROLA KOMPLETNOŚCI (per wieś, nie per podfolder) ---
+        # --- KONTROLA KOMPLETNOŚCI ---
         warnings = []
-        for village, pdfs in sorted(village_pdfs.items()):
-            pdf_names = [p.name.lower() for p in pdfs]
-            has_title = any(template_matches(PDF_ORDER_TEMPLATES[0], n) for n in pdf_names)
-            has_optax = any(template_matches(PDF_ORDER_TEMPLATES[3], n) for n in pdf_names)
-            has_opis = any(template_matches(PDF_ORDER_TEMPLATES[1], n) for n in pdf_names)
-            has_rej = any(template_matches(PDF_ORDER_TEMPLATES[7], n) for n in pdf_names)
+        for folder in pdf_dirs:
+            if folder == in_dir:
+                # Bierzemy tylko pliki z głównego folderu
+                pdfs = [p.name.lower() for p in in_dir.glob("*.pdf")]
+                village_name = in_dir.parent.name
+                if village_name.upper() in ["PDF", "WORD", "TXT"]:
+                    village_name = in_dir.parent.parent.name
+            else:
+                pdfs = [p.name.lower() for p in folder.iterdir() if p.suffix.lower() == ".pdf"]
+                village_name = folder.name
+
+            has_title = any(template_matches(PDF_ORDER_TEMPLATES[0], p) for p in pdfs)
+            has_optax = any(template_matches(PDF_ORDER_TEMPLATES[3], p) for p in pdfs)
+            has_opis = any(template_matches(PDF_ORDER_TEMPLATES[1], p) for p in pdfs)
+            has_rej = any(template_matches(PDF_ORDER_TEMPLATES[7], p) for p in pdfs)
 
             missing = []
             if not has_title: missing.append("STR_TYT")
@@ -133,31 +143,43 @@ class TabPdfMixin:
             if not has_rej: missing.append("REJESTR")
 
             if missing:
-                warnings.append(f"• Wieś {village.upper()}: brak -> {', '.join(missing)}")
+                warnings.append(f"• Wieś {village_name.upper()}: brak -> {', '.join(missing)}")
 
         if warnings:
             self.log("[KONTROLA] Wykryto braki w folderach do scalenia. Oczekiwanie na decyzję...")
             if not self.show_validation_window_sync("Wykryto brakujące pliki (niektóre wsie nie są kompletne):",
                                                     warnings):
                 raise InterruptedError("Operacja scalania przerwana przez użytkownika.")
-        # -------------------------------------------------------------
+        # -----------------------------
 
         count = 0
-        total_villages = len(village_pdfs)
-        self.start_progress_tracking(total_villages, "Scalanie PDF")
+        total_dirs = len(pdf_dirs)
+        self.start_progress_tracking(total_dirs, "Scalanie PDF")
         template_keys = get_saved_template_order(in_dir, mode_key)
 
-        for idx, (village, pdfs) in enumerate(sorted(village_pdfs.items()), start=1):
+        for idx_dir, folder in enumerate(pdf_dirs, start=1):
             self.check_stop()
-            self.set_progress((idx - 1) / total_villages if total_villages else 1, current_file=village, current=idx - 1)
+
+            if folder == in_dir:
+                village_name = in_dir.parent.name
+                if village_name.upper() in ["PDF", "WORD", "TXT"]:
+                    village_name = in_dir.parent.parent.name
+                target_dir = out_dir
+                pdfs = sorted(list(in_dir.glob("*.pdf")))
+            else:
+                village_name = folder.name
+                target_dir = out_dir / folder.relative_to(in_dir)
+                pdfs = sorted([p for p in folder.iterdir() if p.suffix.lower() == ".pdf"])
+
+            self.set_progress((idx_dir - 1) / total_dirs if total_dirs else 1, current_file=village_name,
+                              current=idx_dir - 1)
 
             ordered_pdfs = build_ordered_pdfs_from_templates(pdfs, template_keys)
             if not ordered_pdfs:
                 continue
 
-            target_dir = out_dir / village
             target_dir.mkdir(parents=True, exist_ok=True)
-            target = target_dir / f"{village}_scalony.pdf"
+            target = target_dir / f"{village_name}_scalony.pdf"
 
             writer = PdfWriter()
             current_page = 0
@@ -179,7 +201,7 @@ class TabPdfMixin:
                     current_page += num_pages
 
                 writer.add_metadata({
-                    "/Title": f"UPUL - {village.upper()}",
+                    "/Title": f"UPUL - {village_name.upper()}",
                     "/Author": "Agencja Cezar",
                     "/Creator": "Kombajn Leśny PRO",
                     "/Producer": "Kombajn Leśny PRO"
@@ -189,7 +211,7 @@ class TabPdfMixin:
                     writer.write(f_out)
                 self.log(f"Połączono: {target.name}")
                 count += 1
-                self.set_progress(idx / total_villages if total_villages else 1, current_file=village, current=idx)
+                self.set_progress(idx_dir / total_dirs if total_dirs else 1, current_file=village_name, current=idx_dir)
             except Exception as e:
                 self.log(f"Błąd przy {target.name}: {e}")
             finally:
@@ -207,9 +229,12 @@ class TabPdfMixin:
 
         for idx_pdf, pdf_path in enumerate(pdfs, start=1):
             self.check_stop()
-            self.set_progress((idx_pdf - 1) / total_pdfs if total_pdfs else 1, current_file=pdf_path.name, current=idx_pdf - 1)
+            self.set_progress((idx_pdf - 1) / total_pdfs if total_pdfs else 1, current_file=pdf_path.name,
+                              current=idx_pdf - 1)
+
             target = out_dir / pdf_path.relative_to(in_dir)
             target.parent.mkdir(parents=True, exist_ok=True)
+
             doc = fitz.open(str(pdf_path))
             out = fitz.open()
             for i in range(doc.page_count):
@@ -224,15 +249,20 @@ class TabPdfMixin:
                 if (white / len(data)) < 0.995:
                     out.insert_pdf(doc, from_page=i, to_page=i)
 
-            # --- DODANIE METADANYCH NA SAMYM KOŃCU PROCESU (FITZ) ---
-            village_name = pdf_path.parent.name.upper()
+            # Inteligentne wyciąganie nazwy wsi do metadanych
+            if pdf_path.parent == in_dir:
+                village_name = in_dir.parent.name.upper()
+                if village_name in ["PDF POLACZONE", "PDF", "WORD", "TXT"]:
+                    village_name = in_dir.parent.parent.name.upper()
+            else:
+                village_name = pdf_path.parent.name.upper()
+
             out.set_metadata({
                 "title": f"UPUL - {village_name}",
                 "author": "Agencja Cezar",
                 "creator": "Kombajn Leśny PRO",
                 "producer": "Kombajn Leśny PRO"
             })
-            # --------------------------------------------------------
 
             out.save(str(target))
             out.close()
