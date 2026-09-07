@@ -51,7 +51,15 @@ def wczytaj_i_przetworz_wlascicieli(sciezka_do_pliku):
             break
 
     df = pd.read_excel(sciezka_do_pliku, header=header_row)
-    df = df.rename(columns={'Numer działki': 'nr_dz', 'Pow.\nklasouż.': 'Pow. klasouż.'})
+    # Odporny rename — łapie znak nowej linii, literalny \n, i warianty pisowni
+    rename_map = {}
+    for c in df.columns:
+        c_str = str(c)
+        if c_str == 'Numer działki':
+            rename_map[c] = 'nr_dz'
+        if 'klasouż' in c_str.lower() and 'pow' in c_str.lower():
+            rename_map[c] = 'Pow. klasouż.'
+    df = df.rename(columns=rename_map)
 
     kolumny_do_wypelnienia = ['nr_dz', 'J. rej.', 'Pow. działki', 'Właściciel']
     istniejace_kolumny = [col for col in kolumny_do_wypelnienia if col in df.columns]
@@ -90,7 +98,7 @@ def wczytaj_i_przetworz_wlascicieli(sciezka_do_pliku):
     # ---------------------------------------------------------------
 
     if not df_full.empty:
-        df_full['pow dz'] = df_full['Pow. działki'].apply(bezpieczna_liczba)
+        df_full['pow dz'] = df_full['Pow. działki'].apply(bezpieczna_liczba) / 10000.0  # m² → ha
 
     wiersze_po_rozbiciu = []
     for _, row in df.iterrows():
@@ -122,8 +130,9 @@ def wczytaj_i_przetworz_wlascicieli(sciezka_do_pliku):
 
     wynik = df_ls.groupby(['nr_dz', 'J. rej.', 'Pow. działki', 'Właściciel'], as_index=False)['Pow. klasouż.'].sum()
     wynik = wynik.rename(columns={'Pow. działki': 'pow dz', 'Pow. klasouż.': 'pow ls'})
-    wynik['pow dz'] = wynik['pow dz'].round(4)
-    wynik['pow ls'] = wynik['pow ls'].round(4)
+    # KONWERSJA m² → ha (XLS ma powierzchnie w m², VAL w ha —统一 do ha)
+    wynik['pow dz'] = (wynik['pow dz'] / 10000.0).round(4)
+    wynik['pow ls'] = (wynik['pow ls'] / 10000.0).round(4)
     wynik = wynik[['nr_dz', 'J. rej.', 'pow dz', 'pow ls', 'Właściciel']]
     return wynik, df_full
 
