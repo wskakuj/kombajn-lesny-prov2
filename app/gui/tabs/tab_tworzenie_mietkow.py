@@ -379,11 +379,12 @@ class TabTworzenieMietkowMixin:
             lines = [line.strip() for line in rest.split('\n') if line.strip()]
 
             # --- ROZBIJANIE LINII ZE ŚREDNIKAMI ---
-            # Rozbijamy na średnikach, ALE tylko gdy w linii NIE MA kodu pocztowego.
-            # Linia z kodem pocztowym (np. "OSIEDLE 24A; 64-410 SIERAKÓW") to JEDEN adres.
+            # Zawsze rozbijamy na średnikach — pierwsza część to nazwisko,
+            # reszta to elementy adresu. Klasyfikacja (nazwisko vs adres)
+            # odbywa się później na pojedynczych częściach.
             expanded_lines = []
             for line in lines:
-                if ';' in line and not re.search(r'\d{2}-\d{3}', line):
+                if ';' in line:
                     parts = [p.strip().rstrip(';').strip() for p in line.split(';')]
                     parts = [p for p in parts if p]
                     expanded_lines.extend(parts)
@@ -457,7 +458,7 @@ class TabTworzenieMietkowMixin:
                 results.append({
                     'NRREJ': nrrej_val,
                     'NAZWISKO': str(name)[:30].strip(),
-                    'IMIE': str(share)[:30].strip(),
+                    'IMIE': str(share)[:30].strip() if j == 0 else '',
                     'RODZICE': '',
                     'ADRES': str(addr)[:60].strip()
                 })
