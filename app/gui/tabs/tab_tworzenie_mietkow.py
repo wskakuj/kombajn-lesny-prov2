@@ -379,54 +379,65 @@ class TabTworzenieMietkowMixin:
             lines = [line.strip() for line in rest.split('\n') if line.strip()]
 
             # --- ROZBIJANIE LINII ZE ŚREDNIKAMI ---
-            # Zawsze rozbijamy na średnikach — pierwsza część to nazwisko,
-            # reszta to elementy adresu. Klasyfikacja (nazwisko vs adres)
-            # odbywa się później na pojedynczych częściach.
-            expanded_lines = []
+            # Jeśli linia ma średnik: część przed pierwszym średnikiem to nazwisko,
+            # reszta to adres. Linie bez średników klasyfikujemy heurystycznie.
+            expanded_names = []
+            expanded_addresses = []
             for line in lines:
                 if ';' in line:
                     parts = [p.strip().rstrip(';').strip() for p in line.split(';')]
                     parts = [p for p in parts if p]
-                    expanded_lines.extend(parts)
+                    if parts:
+                        first = parts[0]
+                        has_marker = bool(re.search(r'\[(OF|OP|PG)\]', first))
+                        # Jeśli pierwsza część nie ma markera i wygląda na adres
+                        # (ma cyfry, pasuje do wzorca ulicy) → cała linia to adres
+                        looks_like_address = bool(
+                            not has_marker and (
+                                re.search(r'\d{2}-\d{3}', first) or
+                                re.search(r'\d+\s*m\.?\s*\d+', first, re.IGNORECASE) or
+                                re.search(r'\bm\.\s*\d+', first, re.IGNORECASE) or
+                                re.search(r'^\D+\s+\d+[A-Za-z]?(?:\s+m\.?\s*\d+)?\s*$', first) is not None or
+                                'ul.' in first.lower() or
+                                'ulica' in first.lower()
+                            )
+                        )
+                        if looks_like_address:
+                            expanded_addresses.extend(parts)
+                        else:
+                            if has_marker:
+                                clean = re.sub(r'\s*\[(OF|OP|PG)\]', '', first).strip()
+                                expanded_names.append(clean)
+                            else:
+                                expanded_names.append(first)
+                            expanded_addresses.extend(parts[1:])
                 else:
-                    expanded_lines.append(line)
-            lines = expanded_lines
-
-            names_temp = []
-            addresses = []
-            address_mode = False
-
-            for line in lines:
-                if line == 'Podmiot grupowy': continue
-
-                has_marker = bool(re.search(r'\[(OF|OP|PG)\]', line))
-
-                is_address = bool(
-                    re.search(r'\d{2}-\d{3}', line) or
-                    'ul.' in line.lower() or
-                    'miejsc.' in line.lower() or
-                    re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or
-                    re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or
-                    re.search(r'^\D+\s+\d+[A-Za-z]?\s*$', line) is not None
-                )
-
-                if has_marker:
-                    clean_name = re.sub(r'\s*\[(OF|OP|PG)\]', '', line).strip()
-                    names_temp.append((clean_name, True))
-                elif is_address:
-                    address_mode = True
-                    addresses.append(line)
-                else:
-                    if address_mode:
-                        addresses.append(line)
+                    # Bez średnika — klasyfikuj heurystycznie
+                    has_marker = bool(re.search(r'\[(OF|OP|PG)\]', line))
+                    is_address = bool(
+                        re.search(r'\d{2}-\d{3}', line) or
+                        'ul.' in line.lower() or
+                        'miejsc.' in line.lower() or
+                        re.search(r'\d+\s*m\.\s*\d+', line, re.IGNORECASE) or
+                        re.search(r'\d+\s*m\s*\d+', line, re.IGNORECASE) or
+                        re.search(r'\bm\.\s*\d+', line, re.IGNORECASE) or
+                        re.search(r'^\D+\s+\d+[A-Za-z]?(?:\s+m\.?\s*\d+)?\s*$', line) is not None
+                    )
+                    if has_marker:
+                        clean_name = re.sub(r'\s*\[(OF|OP|PG)\]', '', line).strip()
+                        expanded_names.append(clean_name)
+                    elif is_address:
+                        expanded_addresses.append(line)
                     else:
-                        names_temp.append((line, False))
+                        expanded_names.append(line)
 
-            if not addresses:
-                while len(names_temp) > 1 and not names_temp[-1][1]:
-                    addresses.insert(0, names_temp.pop()[0])
+            # Jeśli nie ma adresów, ostatnie "nazwiska" to może być adres
+            if not expanded_addresses and len(expanded_names) > 1:
+                while len(expanded_names) > 1:
+                    expanded_addresses.insert(0, expanded_names.pop())
 
-            names = [n[0] for n in names_temp]
+            names = expanded_names
+            addresses = expanded_addresses
 
             for j, name in enumerate(names):
                 addr = addresses[j] if j < len(addresses) else (addresses[-1] if addresses else "")
@@ -447,7 +458,7 @@ class TabTworzenieMietkowMixin:
                         else:
                             addr = " ".join(parts[::-1])
                     else:
-                        addr = parts[0] if parts else "" 
+                        addr = parts[0] if parts else ""
                 addr = self.napraw_powtorzenia_adresu(addr)
 
                 try:
@@ -596,9 +607,12 @@ class TabTworzenieMietkowMixin:
 
                 target_dir = out_dir / name
                 try:
+                    # Jeśli folder istnieje — pomiń, nie nadpisuj
                     if target_dir.exists():
-                        self.log(f"  -> Folder '{name}' już istnieje. Struktura zostanie uzupełniona.")
-                    shutil.copytree(base_dir, target_dir, dirs_exist_ok=True)
+                        self.log(f"  -> Folder '{name}' już istnieje — pominięto (nie nadpisano).")
+                        self.set_progress(idx / total)
+                        continue
+                    shutil.copytree(base_dir, target_dir)
 
                     # WSTRZYKIWANIE BAZY WŁAŚCICIELI
                     if baz_dir:
@@ -800,8 +814,13 @@ class TabTworzenieMietkowMixin:
 
                         nr_dz = str(row.get('nr_dz', '')).strip()
                         litery = str(row.get('litery', ''))
-                        oddzial = "".join(ch for ch in litery if ch.isdigit())[:7]
-                        pododdz = "".join(ch for ch in litery if ch.isalpha())[:3]
+                        # "X" w litery → ODDZIAL (kolumna H), nie PODODDZ (kolumna I)
+                        if litery.strip().upper() == 'X':
+                            oddzial = 'X'
+                            pododdz = ''
+                        else:
+                            oddzial = "".join(ch for ch in litery if ch.isdigit())[:7]
+                            pododdz = "".join(ch for ch in litery if ch.isalpha())[:3]
                         pow_val = row['__POW']
                         records.append({
                             'NRREJ': nrrej_val,

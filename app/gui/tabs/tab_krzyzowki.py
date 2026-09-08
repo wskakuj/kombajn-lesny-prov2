@@ -200,8 +200,13 @@ class TabKrzyzowkiMixin:
 
                         nr_dz = str(row.get('nr_dz', '')).strip()
                         litery = str(row.get('litery', ''))
-                        oddzial = "".join(ch for ch in litery if ch.isdigit())[:7]  # cyfry  -> ODDZIAL
-                        pododdz = "".join(ch for ch in litery if ch.isalpha())[:3]  # litery -> PODODDZ
+                        # "X" w litery → ODDZIAL (kolumna H), nie PODODDZ (kolumna I)
+                        if litery.strip().upper() == 'X':
+                            oddzial = 'X'
+                            pododdz = ''
+                        else:
+                            oddzial = "".join(ch for ch in litery if ch.isdigit())[:7]  # cyfry  -> ODDZIAL
+                            pododdz = "".join(ch for ch in litery if ch.isalpha())[:3]  # litery -> PODODDZ
                         pow_val = row['__POW']
                         records.append({
                             'NRREJ': nrrej_val,  # <-- KONIECZNIE, jako pierwsze
