@@ -329,6 +329,7 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
             pow_ewid = group['pow ls'].iloc[0]
             pow_docelowa = group['pow dz'].iloc[0]
             j_rej = group['J. rej.'].iloc[0] if 'J. rej.' in group.columns else ""
+            wlasciciel = group['właściciel'].iloc[0] if 'właściciel' in group.columns else ""
             startowy_las = float(pow_ewid) if (pd.notna(pow_ewid) and str(pow_ewid).strip() != "") else 0.0
             roznica = round(suma_f - startowy_las, 4)
 
@@ -340,14 +341,16 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
                     'J. rej.': j_rej, 'nr działki': dz,
                     'aktualna pow ls': round(suma_f, 4), 'ls ewidenca': startowy_las,
                     'ile przybyło': roznica,
-                    'pow dz': pow_docelowa if pd.notna(pow_docelowa) else ""
+                    'pow dz': pow_docelowa if pd.notna(pow_docelowa) else "",
+                    'właściciel': str(wlasciciel) if pd.notna(wlasciciel) else ""
                 })
             elif roznica < 0:
                 ubylo_data.append({
                     'J. rej.': j_rej, 'nr działki': dz,
                     'aktualna pow ls': round(suma_f, 4), 'ls ewidenca': startowy_las,
                     'ile ubyło': roznica,
-                    'pow dz': pow_docelowa if pd.notna(pow_docelowa) else ""
+                    'pow dz': pow_docelowa if pd.notna(pow_docelowa) else "",
+                    'właściciel': str(wlasciciel) if pd.notna(wlasciciel) else ""
                 })
 
         if not df_braki.empty:
@@ -361,7 +364,8 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
                             'J. rej.': j_rej, 'nr działki': row.get('nr_dz', ''),
                             'aktualna pow ls': 0.0, 'ls ewidenca': pow_ewid,
                             'ile ubyło': -float(pow_ewid),
-                            'pow dz': pow_doc if pd.notna(pow_doc) else ""
+                            'pow dz': pow_doc if pd.notna(pow_doc) else "",
+                            'właściciel': str(row.get('właściciel', ''))
                         })
 
     return df, pd.DataFrame(przybylo_data), pd.DataFrame(ubylo_data)
@@ -369,8 +373,10 @@ def wykonaj_makro_vba(df_out, df_braki, tylko_wyrownywanie=False):
 
 
 def formatuj_arkusz_raportowy(worksheet, tytul, hex_kolor_tytulu):
+    max_col = worksheet.max_column if worksheet.max_column else 6
+    max_col_letter = get_column_letter(max_col)
     worksheet['A1'] = tytul
-    worksheet.merge_cells('A1:F1')
+    worksheet.merge_cells(f'A1:{max_col_letter}1')
     worksheet['A1'].font = Font(size=18, bold=True, color=hex_kolor_tytulu)
     worksheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
 
@@ -381,7 +387,6 @@ def formatuj_arkusz_raportowy(worksheet, tytul, hex_kolor_tytulu):
                          bottom=Side(style='thin', color='000000'))
 
     max_row = worksheet.max_row
-    max_col = 6
 
     for col in range(1, max_col + 1):
         cell = worksheet.cell(row=2, column=col)
