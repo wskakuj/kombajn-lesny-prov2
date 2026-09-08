@@ -402,7 +402,16 @@ class TabTworzenieMietkowMixin:
                                 'ulica' in first.lower()
                             )
                         )
-                        if looks_like_address:
+                        # Dodatkowo: jeśli nie ma markera, nie wygląda na adres,
+                        # ale składa się z jednego słowa lub kończy się myślnikiem
+                        # i mamy już nazwiska → to nazwa miejscowości, nie nazwisko
+                        looks_like_place = bool(
+                            not has_marker and expanded_names and (
+                                len(first.split()) <= 1 or
+                                bool(re.search(r'^\S+\s*-\s*$', first))
+                            )
+                        )
+                        if looks_like_address or looks_like_place:
                             expanded_addresses.extend(parts)
                         else:
                             if has_marker:
@@ -427,6 +436,10 @@ class TabTworzenieMietkowMixin:
                         clean_name = re.sub(r'\s*\[(OF|OP|PG)\]', '', line).strip()
                         expanded_names.append(clean_name)
                     elif is_address:
+                        expanded_addresses.append(line)
+                    elif expanded_names:
+                        # Linia bez średnika, bez markera, bez cech adresu,
+                        # ale mamy już nazwiska → to nazwa miejscowości (kontynuacja adresu)
                         expanded_addresses.append(line)
                     else:
                         expanded_names.append(line)
