@@ -380,9 +380,12 @@ class TabTworzenieMietkowMixin:
 
             # --- ROZBIJANIE LINII ZE ŚREDNIKAMI ---
             # Jeśli linia ma średnik: część przed pierwszym średnikiem to nazwisko,
-            # reszta to adres. Linie bez średników klasyfikujemy heurystycznie.
-            expanded_names = []
-            expanded_addresses = []
+            # a cała reszta połączona przecinkami to PEŁNY adres tej osoby
+            # (ulica + numer + kod pocztowy + miejscowość).
+            # entries: [nazwisko, pełny_adres] — adres z jednej linii (po średniku
+            # po nazwisku) to JEDEN pełny adres tej osoby: ulica + miejscowość + kod
+            entries = []
+            addr_pool = []   # adresy z linii czysto adresowych (bez nazwiska)
             for line in lines:
                 if ';' in line:
                     parts = [p.strip().rstrip(';').strip() for p in line.split(';')]
@@ -406,20 +409,19 @@ class TabTworzenieMietkowMixin:
                         # ale składa się z jednego słowa lub kończy się myślnikiem
                         # i mamy już nazwiska → to nazwa miejscowości, nie nazwisko
                         looks_like_place = bool(
-                            not has_marker and expanded_names and (
+                            not has_marker and entries and (
                                 len(first.split()) <= 1 or
                                 bool(re.search(r'^\S+\s*-\s*$', first))
                             )
                         )
                         if looks_like_address or looks_like_place:
-                            expanded_addresses.extend(parts)
+                            addr_pool.append(", ".join(parts))
                         else:
                             if has_marker:
                                 clean = re.sub(r'\s*\[(OF|OP|PG)\]', '', first).strip()
-                                expanded_names.append(clean)
                             else:
-                                expanded_names.append(first)
-                            expanded_addresses.extend(parts[1:])
+                                clean = first
+                            entries.append([clean, ", ".join(parts[1:])])
                 else:
                     # Bez średnika — klasyfikuj heurystycznie
                     has_marker = bool(re.search(r'\[(OF|OP|PG)\]', line))
@@ -434,44 +436,32 @@ class TabTworzenieMietkowMixin:
                     )
                     if has_marker:
                         clean_name = re.sub(r'\s*\[(OF|OP|PG)\]', '', line).strip()
-                        expanded_names.append(clean_name)
+                        entries.append([clean_name, ""])
                     elif is_address:
-                        expanded_addresses.append(line)
-                    elif expanded_names:
+                        addr_pool.append(line)
+                    elif entries:
                         # Linia bez średnika, bez markera, bez cech adresu,
                         # ale mamy już nazwiska → to nazwa miejscowości (kontynuacja adresu)
-                        expanded_addresses.append(line)
+                        addr_pool.append(line)
                     else:
-                        expanded_names.append(line)
+                        entries.append([line, ""])
 
-            # Jeśli nie ma adresów, ostatnie "nazwiska" to może być adres
-            if not expanded_addresses and len(expanded_names) > 1:
-                while len(expanded_names) > 1:
-                    expanded_addresses.insert(0, expanded_names.pop())
+            # Wypełnij brakujące adresy:
+            # 1) nazwisko bez własnego adresu dziedziczy ostatni widziany adres
+            last = ""
+            for e in entries:
+                if e[1]:
+                    last = e[1]
+                else:
+                    e[1] = last
+            # 2) nazwiska z początku bloku (przed pierwszym adresem) — weź
+            #    pierwszy dostępny adres (od osób albo z puli adresów)
+            first_avail = next((e[1] for e in entries if e[1]), "") or (addr_pool[0] if addr_pool else "")
+            for e in entries:
+                if not e[1]:
+                    e[1] = first_avail
 
-            names = expanded_names
-            addresses = expanded_addresses
-
-            for j, name in enumerate(names):
-                addr = addresses[j] if j < len(addresses) else (addresses[-1] if addresses else "")
-
-                if ';' in addr:
-                    parts = [p.strip() for p in addr.split(';') if p.strip()]
-                    if len(parts) >= 2:
-                        city_match = re.match(r'(\d{2}-\d{3})\s+(.+)', parts[1])
-                        if city_match:
-                            postal_code = city_match.group(1)
-                            city_name = city_match.group(2).strip()
-                            if city_name in parts[0]:
-                                # Miasto się powtarza → zachowaj kod pocztowy + pierwsza część
-                                addr = f"{postal_code} {parts[0]}"
-                            else:
-                                # Różne → odwróć i połącz
-                                addr = " ".join(parts[::-1])
-                        else:
-                            addr = " ".join(parts[::-1])
-                    else:
-                        addr = parts[0] if parts else ""
+            for j, (name, addr) in enumerate(entries):
                 addr = self.napraw_powtorzenia_adresu(addr)
 
                 try:
