@@ -532,6 +532,8 @@ class ModernApp(
         self.taksator_tabview.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
 
         tab_all = self.mietek_tabview.add("Pełny Automat (1-Click)")
+        tab_wydruki_mietek = self.mietek_tabview.add("Generowanie: MIETEK -> TXT")
+        self.setup_wydruki_tab(tab_wydruki_mietek)
         tab_word = self.mietek_tabview.add("Konwersja: MIETEK -> Word")
         tab_mietek_tpl_gen = self.mietek_tabview.add("Kreator Szablonu STR_TYT")
         tab_mietek_title = self.mietek_tabview.add("Zaczytywanie danych STR_TYT")
@@ -662,11 +664,9 @@ class ModernApp(
         tab_rozl_main = self.rozliczanie_tabview.add("Rozliczanie powierzchni")
         tab_tworzenie_mietkow = self.rozliczanie_tabview.add("Tworzenie i wpisywanie mietków")
         tab_halizny = self.rozliczanie_tabview.add("Halizny")
-        tab_wydruki = self.rozliczanie_tabview.add("Wydruki z DBF")
         self.setup_rozliczanie_tab(tab_rozl_main)
         self.setup_tworzenie_mietkow_tab(tab_tworzenie_mietkow)
         self.setup_halizny_tab(tab_halizny)
-        self.setup_wydruki_tab(tab_wydruki)
         tab_excel_z_mdb = self.rozliczanie_tabview.add("Excel z MDB")
         self.setup_excel_z_mdb_tab(tab_excel_z_mdb)
         # Przywrócenie widoku zakładki Konwerter PDF
