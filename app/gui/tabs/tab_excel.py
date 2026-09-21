@@ -410,7 +410,7 @@ class TabExcelMixin:
                 try:
                     found = ws.Cells.Find("Wskazania godspodarcze")
                     while found:
-                        found.Value = "Wskazania gospodarcze "
+                        found.Value = "Wskazania gospodarcze"
                         found = ws.Cells.FindNext(found)
                 except Exception:
                     pass
