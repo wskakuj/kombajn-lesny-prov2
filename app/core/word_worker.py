@@ -221,31 +221,36 @@ def run_word_worker(in_dir_str, out_dir_str, remove_names, file_filter=None, mar
                     finally:
                         doc.Save()
                         doc.Close(SaveChanges=False)
-            # --- NAKŁADANIE MARGINESÓW NA SAMYM KOŃCU (PO WSZYSTKICH MAKRACH) ---
-            print(">>> Aplikowanie ostatecznych marginesów z konfiguracji...")
-            for f in files:
-                f_upper = f.stem.upper()
-                if f_upper in margin_config:
-                    ext = ".docx" if f_upper == "REJESTR1" else ".doc"
-                    rel_path = f.relative_to(in_dir)
-                    target = out_dir / rel_path.parent / f"{f.stem}{ext}"
-                    if target.exists():
-                        doc = None
-                        try:
-                            doc = word.Documents.Open(str(target))
-                            m = margin_config[f_upper]
-                            doc.PageSetup.TopMargin = 28.35 * m[0]
-                            doc.PageSetup.BottomMargin = 28.35 * m[1]
-                            doc.PageSetup.LeftMargin = 28.35 * m[2]
-                            doc.PageSetup.RightMargin = 28.35 * m[3]
-                            doc.Save()
-                            print(f"  └─ Ustawiono marginesy dla: {target.name}")
-                        except Exception as e:
-                            print(f"  └─ Ostrzeżenie: Błąd ustawiania marginesów ({target.name}): {e}")
-                        finally:
-                            if doc is not None:
-                                doc.Close(SaveChanges=False)
-            # --------------------------------------------------------------------
+
+        # --- NAKŁADANIE MARGINESÓW NA SAMYM KOŃCU (PO WSZYSTKICH MAKRACH) ---
+        # POPRAWKA: ten blok był przypadkowo zagnieżdżony wewnątrz pętli
+        # "for f in files:" powyżej — wykonywał się raz na KAŻDY plik TXT,
+        # za każdym razem otwierając i zapisując WSZYSTKIE dokumenty w Wordzie
+        # (N×N operacji COM). Teraz wykonuje się dokładnie RAZ, po pętli.
+        print(">>> Aplikowanie ostatecznych marginesów z konfiguracji...")
+        for f in files:
+            f_upper = f.stem.upper()
+            if f_upper in margin_config:
+                ext = ".docx" if f_upper == "REJESTR1" else ".doc"
+                rel_path = f.relative_to(in_dir)
+                target = out_dir / rel_path.parent / f"{f.stem}{ext}"
+                if target.exists():
+                    doc = None
+                    try:
+                        doc = word.Documents.Open(str(target))
+                        m = margin_config[f_upper]
+                        doc.PageSetup.TopMargin = 28.35 * m[0]
+                        doc.PageSetup.BottomMargin = 28.35 * m[1]
+                        doc.PageSetup.LeftMargin = 28.35 * m[2]
+                        doc.PageSetup.RightMargin = 28.35 * m[3]
+                        doc.Save()
+                        print(f"  └─ Ustawiono marginesy dla: {target.name}")
+                    except Exception as e:
+                        print(f"  └─ Ostrzeżenie: Błąd ustawiania marginesów ({target.name}): {e}")
+                    finally:
+                        if doc is not None:
+                            doc.Close(SaveChanges=False)
+        # --------------------------------------------------------------------
     finally:
         if word is not None:  # <--- Dodany warunek
             word.Quit()
