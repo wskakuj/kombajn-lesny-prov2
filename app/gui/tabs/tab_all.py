@@ -17,12 +17,16 @@ import win32com.client
 import pythoncom
 
 from app.config import (
-    is_file_locked, load_margins, save_margins,
+    is_file_locked, load_margins, save_margins, add_tooltip,
 )
 
 from app.core.word_worker import (
     get_resource_path,
 )
+from app.core.wydruki import (
+    generuj_wszystkie_po_przeniesieniu, generuj_halizny_txt,
+)
+from app.gui.tabs.tab_wydruki import AGENCJA_NAGLOWKA
 
 class TabAllMixin:
     """Mixin dla ModernApp — metody zostały wyciągnięte z oryginalnego guipia.py."""
@@ -30,6 +34,27 @@ class TabAllMixin:
 
     def _setup_all_extras(self, card_frame, row_idx):
         font_label = ctk.CTkFont(family="Segoe UI", size=13, weight="bold")
+
+        # 0. GENEROWANIE TXT Z DBF MIETEKA (pierwszy etap procesu)
+        self.all_gen_txt_var = ctk.BooleanVar(value=True)
+        cb_gen_txt = ctk.CTkCheckBox(
+            card_frame,
+            text="Generuj pliki TXT z DBF mietka (na starcie)",
+            variable=self.all_gen_txt_var,
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+        )
+        cb_gen_txt.grid(
+            row=row_idx, column=0, columnspan=3, padx=15, pady=(0, 5), sticky="w"
+        )
+        add_tooltip(
+            cb_gen_txt,
+            "Pierwszy etap procesu, dla każdego obrębu źródłowego:\n"
+            "  1. generuje HALIZNY.TXT (zestawienie pow. niezalesionych),\n"
+            "  2. przenosi halizny w D*.DBF (jak przycisk w zakładce 'Halizny'),\n"
+            "  3. generuje OPTAX, TAB_KLW3, ZEST1, REJESTR1, WSKAZ1, WYK_NEG\n"
+            "     i WSK_ZB bezpośrednio z DBF (w miejscu, obok plików DBF).\n"
+            "Powtórne uruchomienie jest bezpieczne (przeniesione halizny są pomijane).",
+        )
 
         # 1. STR_TYT Checkbox
         self.all_gen_str_tyt_var = ctk.BooleanVar(value=False)
@@ -41,14 +66,14 @@ class TabAllMixin:
             command=self._toggle_all_template_ui,
         )
         cb_str.grid(
-            row=row_idx, column=0, columnspan=3, padx=15, pady=(0, 5), sticky="w"
+            row=row_idx + 1, column=0, columnspan=3, padx=15, pady=(0, 5), sticky="w"
         )
 
         self.all_template_frame = ctk.CTkFrame(
             card_frame, fg_color="#1E1E1E", border_width=1, border_color="#333333"
         )
         self.all_template_frame.grid(
-            row=row_idx + 1, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="ew"
+            row=row_idx + 2, column=0, columnspan=3, padx=15, pady=(0, 10), sticky="ew"
         )
         self.all_template_frame.grid_columnconfigure(1, weight=1)
 
@@ -86,14 +111,14 @@ class TabAllMixin:
             command=self._toggle_all_skroty_ui,
         )
         cb_skroty.grid(
-            row=row_idx + 2, column=0, columnspan=3, padx=15, pady=(5, 5), sticky="w"
+            row=row_idx + 3, column=0, columnspan=3, padx=15, pady=(5, 5), sticky="w"
         )
 
         self.all_skroty_frame = ctk.CTkFrame(
             card_frame, fg_color="#1E1E1E", border_width=1, border_color="#333333"
         )
         self.all_skroty_frame.grid(
-            row=row_idx + 3, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="ew"
+            row=row_idx + 4, column=0, columnspan=3, padx=15, pady=(0, 15), sticky="ew"
         )
         self.all_skroty_frame.grid_columnconfigure(1, weight=1)
 
@@ -128,7 +153,7 @@ class TabAllMixin:
         self._toggle_all_skroty_ui()
 
         # --- DODANA TABELA MARGINESÓW ---
-        self._build_margins_ui(card_frame, row_idx + 4, "ALL")
+        self._build_margins_ui(card_frame, row_idx + 5, "ALL")
 
     def _toggle_all_template_ui(self):
         state = (
@@ -159,23 +184,49 @@ class TabAllMixin:
                 # Jeśli checkbox jest odznaczony, całkowicie ukrywamy ramkę
                 self.all_skroty_frame.grid_remove()
 
-    def _resolve_skroty_path(self):
-        """Zwraca ścieżkę do pliku 'Skróty i symbole' (własny użytkownika lub domyślny z zasobów programu)."""
-        # Sprawdzamy, czy użytkownik chce użyć własnego pliku
-        if getattr(self, "all_custom_skroty_var", None) and self.all_custom_skroty_var.get():
-            custom = self.all_skroty_entry.get().strip()
-            if custom and Path(custom).exists():
-                return custom
-            self.log(
-                "[UWAGA] Wskazano własny plik 'Skróty i symbole', ale nie istnieje. Używam domyślnego z programu."
-            )
-        # Pobieranie domyślnego pliku z zasobów programu w tle
-        domyslne = get_resource_path("Skroty.pdf")
-        if not domyslne.exists():
-            domyslne = get_resource_path("Skroty.docx")
-        if domyslne.exists():
-            return str(domyslne)
-        return None
+    def task_generuj_txt(self, in_root):
+        """Etap 0: generuje pliki TXT MIETEKA z DBF (jak 'Generowanie: MIETEK -> TXT').
+
+        Szuka folderów z plikami O*.DBF (np. WOL.001) w drzewie źródłowym
+        i generuje komplet wydruków w miejscu, obok plików DBF.
+        Zwraca liczbę obrębów, dla których coś wygenerowano.
+        """
+        in_root = Path(in_root)
+        # katalogi bezpośrednio zawierające O*.DBF
+        kat_o = sorted({p.parent for p in in_root.rglob("*.DBF")
+                        if p.name[:1].upper() == "O"})
+        if not kat_o:
+            self.log("[TXT] Nie znaleziono plików O*.DBF — pomijam generowanie z DBF.")
+            return 0
+        # obręb = folder nadrzędny (np. CHORZEWO nad WOL.001); gdy DBF-y leżą
+        # bezpośrednio w folderze źródłowym, traktujemy go jako obręb
+        obreby = sorted({d.parent if d.parent != in_root.parent else d for d in kat_o})
+        n = 0
+        for obr in obreby:
+            self.check_stop()
+            try:
+                # 1) HALIZNY.TXT (przed przeniesieniem halizn)
+                hp, hn = generuj_halizny_txt(obr, agencja=AGENCJA_NAGLOWKA)
+                if hn:
+                    self.log(f"  [TXT] {obr.name}: HALIZNY.TXT ({hn} wydzieleń)")
+                    st, np_ = self.przenies_halizny_obreb(obr)
+                    if st == "ok":
+                        self.log(f"  [TXT] {obr.name}: przeniesiono halizny "
+                                 f"w D*.DBF ({np_} rekordów)")
+                    elif st == "blad":
+                        self.log(f"  [TXT] {obr.name}: błąd przenoszenia halizn — "
+                                 f"wynik może być niepełny.")
+                # 2) komplet wydruków (po przeniesieniu halizn)
+                out = generuj_wszystkie_po_przeniesieniu(obr, agencja=AGENCJA_NAGLOWKA)
+                if out:
+                    n += 1
+                    self.log(f"  [TXT] {obr.name}: {', '.join(sorted(out))}")
+                else:
+                    self.log(f"  [TXT] {obr.name}: brak O*.DBF — pomijam.")
+            except Exception as e:
+                self.log(f"  [TXT] {obr.name}: błąd — {e}")
+                traceback.print_exc()
+        return n
 
     def start_pipeline(self, mode):
         src_path = self.entries[mode]["src"].get()
@@ -308,6 +359,10 @@ class TabAllMixin:
         pdf_dir = Path(pdf_dir)
         skroty_source_path = Path(skroty_source_path)
 
+        if not pdf_dir.exists():
+            self.log("[SKROTY] Brak folderu PDF — pomijam dołączanie skrótów.")
+            return 0
+
         if not skroty_source_path.exists():
             self.log("[SKROTY] Plik nie istnieje. Pomijam.")
             return 0
@@ -425,18 +480,38 @@ class TabAllMixin:
 
                 self.reset_dashboard()
 
-                self.update_dashboard(0, "running", "Czyszczenie...")
+                # === ETAP 0: GENEROWANIE TXT Z DBF MIETEKA ===
+                if getattr(self, "all_gen_txt_var", None) is None or self.all_gen_txt_var.get():
+                    self.update_dashboard(0, "running", "Generowanie TXT...")
+                    self.check_stop()
+                    c0 = self.task_generuj_txt(in_root)
+                    self.update_dashboard(0, "done", f"{c0} obrębów")
+                else:
+                    self.update_dashboard(0, "done", "Pominięto")
+                self.set_progress(0.05)
+
+                self.update_dashboard(1, "running", "Czyszczenie...")
                 self.check_stop()
                 c1 = self.task_clean_txt(in_root, dir_01)
                 self._flatten_001_subfolders(dir_01)
-                self.update_dashboard(0, "done", f"{c1} plików")
+                self.update_dashboard(1, "done", f"{c1} plików")
                 self.set_progress(0.15)
 
-                self.update_dashboard(1, "running", "Kompilacja...")
+                if c1 == 0:
+                    # nic do roboty — nie kontynuuj (Word/PDF nie mają na czym pracować)
+                    self.update_dashboard(1, "error", "Brak TXT")
+                    self.log(
+                        "\n[BŁĄD] Brak plików TXT do przetworzenia.\n"
+                        "Folder źródłowy nie zawiera plików TXT ani plików DBF mietka\n"
+                        "(O*.DBF itd.), albo odznaczono 'Generuj pliki TXT z DBF mietka'.")
+                    self.update_status("Błąd — brak plików TXT", "#D83B01", animate=False)
+                    return
+
+                self.update_dashboard(2, "running", "Kompilacja...")
                 self.check_stop()
                 self.task_word_processing_subprocess(dir_01, dir_02, remove_names, margins_dict=margins_dict)
                 self._flatten_001_subfolders(dir_02)
-                self.update_dashboard(1, "done", "Gotowe")
+                self.update_dashboard(2, "done", "Gotowe")
                 self.set_progress(0.30)
 
                 # === GENEROWANIE STR_TYT ===
@@ -458,17 +533,27 @@ class TabAllMixin:
                         )
                 self.set_progress(0.45)
 
-                self.update_dashboard(2, "running", "Konwersja...")
+                self.update_dashboard(3, "running", "Konwersja...")
                 self.check_stop()
                 c3 = self.task_convert_to_pdf(dir_02, dir_03)
                 self._flatten_001_subfolders(dir_03)
-                self.update_dashboard(2, "done", f"{c3} plików")
+                self.update_dashboard(3, "done", f"{c3} plików")
                 self.set_progress(0.60)
 
                 # === WSTRZYKIWANIE SKROTÓW (ZAWSZE WŁĄCZONE) ===
                 self.update_status("Dołączanie 'Skrótów i symboli' do pakietów...", "#0078D7")
 
-                skroty_path = self._resolve_skroty_path()
+                skroty_path = None
+                # Sprawdzamy, czy użytkownik chce użyć własnego pliku
+                if getattr(self, "all_custom_skroty_var", None) and self.all_custom_skroty_var.get():
+                    skroty_path = self.all_skroty_entry.get().strip()
+                else:
+                    # Pobieranie domyślnego pliku z zasobów programu w tle
+                    domyslne = get_resource_path("Skroty.pdf")
+                    if not domyslne.exists():
+                        domyslne = get_resource_path("Skroty.docx")
+                    if domyslne.exists():
+                        skroty_path = str(domyslne)
 
                 # Przystępujemy do dołączenia pliku
                 if skroty_path and Path(skroty_path).exists():
@@ -477,16 +562,30 @@ class TabAllMixin:
                 else:
                     self.log("[UWAGA] Nie znaleziono pliku ze skrótami (ani domyślnego, ani własnego). Pomijam.")
 
-                self.update_dashboard(3, "running", "Scalanie...")
+                self.update_dashboard(4, "running", "Scalanie...")
                 self.check_stop()
                 c4 = self.task_merge_pdfs(dir_03, dir_04, mode_key="ALL")
-                self.update_dashboard(3, "done", f"{c4} pakietów")
+                self.update_dashboard(4, "done", f"{c4} pakietów")
                 self.set_progress(0.80)
 
-                self.update_dashboard(4, "running", "Weryfikacja...")
+                # usuwanie pustych stron — bez osobnego kroku na dashboardzie
                 self.check_stop()
                 c5 = self.task_remove_blank_pages(dir_04, dir_05)
-                self.update_dashboard(4, "done", f"{c5} plików")
+
+                # === PORZĄDKI: zostaje tylko finalny folder "PDF polaczone" ===
+                try:
+                    if dir_04 and dir_04.exists():
+                        shutil.rmtree(dir_04)
+                        self.log("[PORZĄDKI] Usunięto folder pośredni 'PDF Polaczone'.")
+                except Exception as e:
+                    self.log(f"[PORZĄDKI] Nie udało się usunąć 'PDF Polaczone': {e}")
+                try:
+                    if dir_05 and dir_05.exists():
+                        dir_05.rename(out_root / "PDF polaczone")
+                        self.log("[PORZĄDKI] Folder 'PDF bez pustych stron' "
+                                 "przemianowano na 'PDF polaczone'.")
+                except Exception as e:
+                    self.log(f"[PORZĄDKI] Nie udało się zmienić nazwy folderu: {e}")
 
             elif mode == "WORD":
                 dir_01, dir_02 = out_root / "TXT", out_root / "Word"
@@ -496,7 +595,13 @@ class TabAllMixin:
                 self.update_status(
                     f"ETAP 1/2: Oczyszczanie plików TXT ({filter_label})", "#0078D7"
                 )
-                self.task_clean_txt(in_root, dir_01, file_filter)
+                cw = self.task_clean_txt(in_root, dir_01, file_filter)
+                if cw == 0:
+                    self.log(
+                        "\n[BŁĄD] Brak plików TXT do przetworzenia "
+                        f"dla filtru: {filter_label}.")
+                    self.update_status("Błąd — brak plików TXT", "#D83B01", animate=False)
+                    return
                 self.set_progress(0.5)
                 self.check_stop()
                 self.update_status(
@@ -530,18 +635,6 @@ class TabAllMixin:
                 )
                 self.task_convert_to_pdf(in_root, dir_03)
                 self._flatten_001_subfolders(dir_03)
-
-                # === WSTRZYKIWANIE SKROTÓW (AUTOMATYCZNIE Z SZABLONU Skroty.docx) ===
-                self.update_status("Dołączanie 'Skrótów i symboli' do pakietów...", "#0078D7")
-                skroty_path = self._resolve_skroty_path()
-                if skroty_path and Path(skroty_path).exists():
-                    c_skroty = self.task_inject_skroty(dir_03, skroty_path)
-                    self.log(f"[SKROTY] Dodano plik do {c_skroty} folderów wsi.")
-                else:
-                    self.log(
-                        "[UWAGA] Nie znaleziono pliku ze skrótami (ani domyślnego, ani własnego). Pomijam."
-                    )
-
                 self.set_progress(0.4 if do_merge else 1.0)
                 if do_merge:
                     self.check_stop()

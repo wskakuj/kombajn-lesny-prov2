@@ -59,6 +59,100 @@ class TabHaliznyMixin:
             })
         return results
 
+    def przenies_halizny_obreb(self, obr):
+        """Przenosi halizny w D*.DBF JEDNEGO obrębu na podstawie HALIZNY.TXT.
+
+        Używane przez zakładkę 'Halizny' (logika) oraz przez Pełny Automat.
+        Zwraca (status, liczba przeniesień):
+          'ok'       — zmodyfikowano i zapisano D*.DBF,
+          'brak_txt' — brak HALIZNY.TXT,
+          'puste'    — HALIZNY.TXT bez wierszy danych,
+          'brak_dbf' — brak D*.DBF,
+          'nic'      — brak rekordów do przeniesienia (np. już przeniesione),
+          'blad'     — błąd odczytu/zapisu.
+        Rekordy z POW_L_ZAL równym 0 są pomijane, dzięki czemu
+        wielokrotne uruchomienie nie niszczy danych.
+        """
+        obr = Path(obr)
+        # --- 1. Znajdź HALIZNY.TXT ---
+        hal_path = None
+        for cand in obr.rglob("HALIZNY.TXT"):
+            hal_path = cand
+            break
+        if hal_path is None:
+            for cand in obr.rglob("HALIZNY.*"):
+                hal_path = cand
+                break
+        if hal_path is None:
+            return ("brak_txt", 0)
+        # --- 2. Odczyt z fallbackiem kodowania ---
+        raw = hal_path.read_bytes()
+        text = raw.decode('cp852', errors='replace')
+        wiersze = self.parse_halizny_txt(text, '│')
+        if not wiersze:
+            text = raw.decode('cp1250', errors='replace')
+            wiersze = self.parse_halizny_txt(text, 'ł')
+        if not wiersze:
+            return ("puste", 0)
+        # --- 3. Mapa (oddzial, pododdz) -> (kolumna, pow_txt, rodzaj) ---
+        hal_map = {}
+        for w in wiersze:
+            key = (w['oddzial'], w['pododdz'])
+            if key in hal_map and hal_map[key][2] != w['rodzaj']:
+                self.log(
+                    f"  ⚠️ {obr.name}: pododdział {w['oddzial']}{w['pododdz']} "
+                    f"występuje w HALIZNY.TXT wielokrotnie z różnym rodzajem — używam ostatniego."
+                )
+            hal_map[key] = (w['kolumna'], w['pow_txt'], w['rodzaj'])
+        # --- 4. Znajdź D*.DBF ---
+        d_dbfs, seen = [], set()
+        for pat in ("D*.DBF", "D*.dbf", "d*.DBF", "d*.dbf"):
+            for q in obr.rglob(pat):
+                k = str(q).upper()
+                if k not in seen:
+                    seen.add(k)
+                    d_dbfs.append(q)
+        if not d_dbfs:
+            return ("brak_dbf", 0)
+        target_dbf = d_dbfs[0]
+        # --- 5. Odczyt DBF i indeks rekordów ---
+        try:
+            fields, records = self.read_dbf(str(target_dbf))
+        except Exception as e:
+            self.log(f"  ❌ {obr.name}: błąd odczytu {target_dbf.name}: {e}")
+            return ("blad", 0)
+        idx_map = {}
+        for ri, rec in enumerate(records):
+            key = (str(rec.get('ODDZIAL', '')).strip(),
+                   str(rec.get('PODODDZ', '')).strip())
+            idx_map.setdefault(key, []).append(ri)
+        # --- 6. Przeniesienie wartości z POW_L_ZAL do właściwej kolumny ---
+        przeniesione = 0
+        for key, (kolumna, pow_txt, rodzaj) in hal_map.items():
+            if key not in idx_map:
+                self.log(
+                    f"  ⚠️ {obr.name}: halizna {key[0]}{key[1]} ({rodzaj}) "
+                    f"nie ma rekordu w {target_dbf.name} — pomijam.")
+                continue
+            ri_list = idx_map[key]
+            for ri in ri_list:
+                rec = records[ri]
+                val = str(rec.get('POW_L_ZAL', '')).strip()
+                if not val:
+                    continue
+                try:
+                    if float(val) == 0.0:
+                        continue  # już przeniesione / puste — nie ruszaj
+                except ValueError:
+                    pass
+                rec[kolumna] = val
+                rec['POW_L_ZAL'] = '0.0000'
+                przeniesione += 1
+        if przeniesione == 0:
+            return ("nic", 0)
+        self.write_dbf(str(target_dbf), fields, records)
+        return ("ok", przeniesione)
+
     def setup_halizny_tab(self, parent):
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(0, weight=1)
