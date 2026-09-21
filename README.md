@@ -28,6 +28,7 @@ kombajn_lesny/
 │   │   │   ├── tab_rozliczanie.py    # Rozliczanie powierzchni
 │   │   │   ├── tab_krzyzowki.py      # Wpisanie krzyżówek
 │   │   │   ├── tab_halizny.py        # Halizny
+│   │   │   ├── tab_wydruki.py        # Wydruki MIETEK z DBF
 │   │   │   ├── tab_excel_z_mdb.py    # Excel z MDB
 │   │   │   ├── tab_tworzenie_mietkow.py   # Tworzenie Mietków
 │   │   │   ├── tab_nazwiska_mietek.py     # NAZWISKA → MIETEK
@@ -39,6 +40,8 @@ kombajn_lesny/
 │   │       └── validation_window.py      # Okno walidacji
 │   └── core/                    # Logika biznesowa (bez UI)
 │       ├── word_worker.py       # Proces Word COM
+│       └── wydruki.py           # Generowanie wydruków MIETEK (HALIZNY, OPTAX,
+│                                 # TAB_KLW3, ZEST1, REJESTR1, WSKAZ1) z DBF
 │       └── excel_tasks.py       # Zadania Excel
 ├── config/
 │   └── territory.json           # Dane województw/powiatów/gmin
@@ -55,6 +58,26 @@ kombajn_lesny/
 pip install -r requirements.txt
 python main.py
 ```
+
+## Zakładka WYDRUKI — wydruki MIETEKA bez MS-DOS
+
+Generuje pliki wydrukowe MIETEKA wprost z plików DBF mietka (format 1:1 z
+oryginałem: cp852, CRLF, ramki, sekwencje PCL, paginacja):
+
+  * **HALIZNY.TXT** — zestawienie powierzchni niezalesionych (uruchom
+    **przed** przeniesieniem halizn w zakładce „Halizny");
+  * **OPTAX.TXT** — opis lasów i gruntów przeznaczonych do zalesienia;
+  * **TAB_KLW3.TXT** — zestawienie wg klas i podklas wieku + siedliska,
+    ochronność, przebudowa (numeracja stron kontynuuje OPTAX);
+  * **ZEST1.TXT** — skorowidz działek;
+  * **REJESTR1.TXT** — rejestr działek wg właścicieli;
+  * **WSKAZ1.TXT** — wykaz wskaźników.
+
+Pozostałe wydruki generuj **po** przeniesieniu halizn. Wzorce odtworzone i
+zweryfikowane bajt-po-bajcie na oryginalnych wydrukach MIETEKA (obręb
+CHORZEWO); jedyna znana rozbieżność: ZEST1 kolejność wewnątrz działki jest
+odwrotną kolejnością indeksu NR_DZ.NTX — wyjątki mogą wynikać z ręcznych
+edycji danych wykonanych po ostatnim wydruku MIETEKA.
 
 ## Architektura
 
