@@ -175,10 +175,34 @@ _PROG_NIEZALESIONE = 240
 
 
 def _f4(v):
+    if v is None:
+        return ''
     try:
         return f"{float(v):.4f}"
     except (TypeError, ValueError):
         return '0.0000'
+
+
+def _wsk_kod(wsk, miaz):
+    """Kod wskaźnika w wydrukach (jak MIETEK): 'TP' z MIAZ 22 -> 'TP-22m3/ha'.
+
+    Ręcznie wpisany kod z końcówką '-..m3/ha' jest najpierw odzierany z niej,
+    potem doklejana końcówka wg aktualnego MIAZ (CS z MIAZ 0 -> 'CS').
+    """
+    base = re.sub(r'-\d+m3/ha$', '', wsk)
+    if miaz and miaz > 0 and 'm3' not in base:
+        return f"{base}-{int(miaz)}m3/ha"
+    return base
+
+
+def _wsk_rj_kod(wsk, miaz):
+    """Kod wskaźnika w REJESTR1: kod z myślnikiem jest ucinany do części
+    przed myślnikiem; czysty kod z MIAZ>0 dostaje końcówkę '-..m3/ha'."""
+    if '-' in wsk:
+        return wsk.split('-')[0]
+    if miaz and miaz > 0:
+        return f"{wsk}-{int(miaz)}m3/ha"
+    return wsk
 
 
 def _klucz_wydz(r):
@@ -209,6 +233,10 @@ def _wczytaj_obreb(obreb_dir):
     # indeksy: oddz+poddz -> rekord
     dane['O_by'] = {f"{r.get('ODDZIAL', '')}{r.get('PODODDZ', '')}".strip(): r for r in dane['O']}
     dane['R_by'] = {f"{r.get('ODDZIAL', '')}{r.get('PODODDZ', '')}".strip(): r for r in dane['R']}
+    dane['R_all'] = {}
+    for _r in dane['R']:
+        dane['R_all'].setdefault(
+            f"{_r.get('ODDZIAL', '')}{_r.get('PODODDZ', '')}".strip(), []).append(_r)
     return dane
 
 
@@ -219,7 +247,7 @@ def _wsks(r):
         wsk = str(r.get(f'WSK{i}', '') or '').strip()
         pw = r.get(f'POW_WSK{i}', 0) or 0
         mz = r.get(f'MIAZ{i}', 0) or 0
-        if wsk and pw > 0:
+        if wsk:
             out.append((wsk, float(pw), mz))
     return out
 
@@ -311,23 +339,52 @@ def generuj_halizny_txt(obreb_dir, agencja=None):
 # Pozycje rejestru (kolejność wg nazwisk) — używana przez REJESTR1, ZEST1, OPTAX
 # ----------------------------------------------------------------------------
 
+# kolacja MIETEKA: polskie diakrytyki foldowane do litery bazowej (Ą->A, Ó->O),
+# natomiast Ł jako osobna litera tuż za L (ŁOKIETEK > LUDWINIAK, ale < MASTALERZ);
+# pozostałe znaki (spacje, cyfry, ukośniki, myślniki) wg kodów ASCII
+_PL_FOLD = str.maketrans('ąćęńóśźżĄĆĘŃÓŚŹŻ', 'acenoszzACENOSZZ')
+
+
+def _pl_klucz(s):
+    out = []
+    for ch in str(s).upper():
+        if ch == 'Ł':
+            out.append(('L', 1))
+        else:
+            out.append((ch.translate(_PL_FOLD), 0))
+    return out
+
+
 def _pozycje_rejestru(dane):
-    """Zwraca listę pozycji [(nrrej, [W...], [D...])] w kolejności MIETEKA
-    (wg NAZWISKO+IMIE właściciela)."""
+    """Zwraca listę pozycji [(nrrej, [W...], [D...])] w kolejności MIETEKA.
+
+    Pozycje numerowane są wg pierwszego wystąpienia w zbiorze W posortowanym
+    po NAZWISKO+IMIE (kolacja _pl_klucz, sortowanie stabilne) — jak indeks
+    NAZWISKO MIETEKA; właściciele pozycji w fizycznej kolejności W.
+    """
     grupy = {}
     for w in dane['W']:
         nr = w.get('NRREJ')
         if nr is None:
             continue
         grupy.setdefault(int(nr), []).append(w)
+    # stabilny sort W po kluczu -> pozycje w kolejności pierwszego wystąpienia
+    porzadek = []
+    seen = set()
+    for w in sorted(dane['W'], key=lambda w: _pl_klucz(
+            str(w.get('NAZWISKO', '') or '') + ' ' + str(w.get('IMIE', '') or ''))):
+        nr = w.get('NRREJ')
+        if nr is None:
+            continue
+        nr = int(nr)
+        if nr not in seen:
+            seen.add(nr)
+            porzadek.append(nr)
     pozycje = []
-    for nr, ws in grupy.items():
-        ws = sorted(ws, key=lambda w: (str(w.get('NAZWISKO', '') or ''),
-                                       str(w.get('IMIE', '') or '')))
+    for nr in porzadek:
+        ws = grupy[nr]          # fizyczna kolejność W w ramach pozycji
         ds = [d for d in dane['D'] if int(d.get('NRREJ') or 0) == nr]
         pozycje.append((nr, ws, ds))
-    pozycje.sort(key=lambda p: (str(p[1][0].get('NAZWISKO', '') or '') +
-                                str(p[1][0].get('IMIE', '') or '')))
     return pozycje
 
 
@@ -362,20 +419,28 @@ def generuj_zest1_txt(obreb_dir, dane=None, pozycje=None, agencja=None):
     lp_map = _lp_pozycji(pozycje)
     obiekt, stan = czytaj_dane_wsi(obreb)
 
-    # kolejność w obrębie działki: wg NR_DZ.NTX (indeks MIETEKA), odwrotnie
-    kolej = None
-    if dane['d_path'] is not None:
-        kolej = czytaj_ntx_kolejnosc(dane['d_path'].with_suffix('.NTX'), len(dane['D']))
-        if kolej is None:
-            kolej = czytaj_ntx_kolejnosc(
-                dane['d_path'].parent / (dane['d_path'].stem + '.NTX'), len(dane['D']))
-    recs = dane['D']
-    if kolej and len(kolej) == len(recs):
-        recs = [recs[i - 1] for i in reversed(kolej)]
-        recs = sorted(recs, key=lambda d: _klucz_dzialki(str(d.get('NR_DZIAL', '') or '')))
-    else:
-        recs = sorted(recs, key=lambda d: (_klucz_dzialki(str(d.get('NR_DZIAL', '') or '')),
-                                           -_idx(recs, d)))
+    # kolejność w obrębie działki i właściciela: permutacja MIETEKA —
+    # dolna połowa grupy rekordów (fizycznych) odwrócona i wyprowadzona
+    # przed górną (artefakt wewnętrznego indeksu B-drzewa;
+    # weryfikowane 1:1 na CHORZEWIE i WOL; przybliżenie dla grup >=6)
+    grupy = {}
+    for d in dane['D']:
+        dz = str(d.get('NR_DZIAL', '') or '').strip()
+        grupy.setdefault(dz, []).append(d)
+
+    def _perm(g):
+        n = len(g)
+        k = n - n // 2          # rozmiar górnej połowy
+        return g[k:][::-1] + g[:k]
+
+    recs = []
+    for dz in sorted(grupy, key=_klucz_dzialki):
+        # w ramach działki: podgrupy wg właściciela (NRREJ) w kolejności fizycznej
+        podgr = {}
+        for d in grupy[dz]:
+            podgr.setdefault(int(d.get('NRREJ') or 0), []).append(d)
+        for nr in podgr:
+            recs.extend(_perm(podgr[nr]))
 
     lines = ['\r Skorowidz działek'.ljust(35) + f"Obiekt: {obiekt}".ljust(49) +
              f"Stan na: {stan}", '',
@@ -422,19 +487,27 @@ _OP_H = (
 _OP_BOT = '└───────┴─────────┴───────────────────────────────────┴────┴────┴─────┴───┴────┴───┴───┴─────┴──────────┴─────────┴─────┴─────────┴───────┴─────┘'
 
 
-def _seg_optax(row1, desc, wsk, pow_wydz=0.0):
+def _seg_optax(row1, desc, wsk, pow_wydz=0.0, tail=None):
     """Wiersz OPTAX.
 
     row1 – None (wiersz kontynuacji) albo 12-elementowa krotka:
            (oddzp, pow_str, gat, wiek, klasa, wys, pier, bon, zad, miaz_pow)
     desc  – tekst opisu (kolumna 3)
     wsk   – None albo (wskaznik, pow_wsk_proc, miaz_na_ha)
+    tail  – elementy taksacyjne na wierszu kontynuacji (drugi rekord R,
+            np. taksacja płazowiny) – 8-elementowa lista
     """
     def c(v, w, just='>'):
         v = '' if v is None else str(v)
         return v.ljust(w) if just == '<' else v.rjust(w)
 
-    if row1 is None:
+    if row1 is None and tail:
+        t = ['' if v is None else str(v) for v in tail]
+        s = ('│' + ' ' * 7 + '│' + ' ' * 9 + '│' + c(desc, 35, '<') +
+             '│' + c(t[0], 4, '<') + '│' + c(t[1], 4) + '│' + ' ' + c(t[2], 4, '<') +
+             '│' + c(t[3], 3) + '│' + c(t[4], 4) + '│' + c(t[5], 3, '<') +
+             '│' + c(t[6], 3, '<') + '│' + c(t[7], 5))
+    elif row1 is None:
         s = ('│' + ' ' * 7 + '│' + ' ' * 9 + '│' + c(desc, 35, '<') +
              '│    │    │     │   │    │   │   │     ')
     else:
@@ -448,8 +521,14 @@ def _seg_optax(row1, desc, wsk, pow_wydz=0.0):
               '│' + ' ' * 9 + '│' + ' ' * 7 + '│' + ' ' * 5 + '│')
     else:
         w, pw, mh = wsk
-        pow_w = pw / 100.0 * pow_wydz
-        maks = round(mh * pow_w) if mh > 0 else ''
+        if pw > 0:
+            pow_w = pow_wydz * pw / 100.0   # kolejność jak MIETEK (arytmetyka binarna!)
+            maks = round(mh * pow_w) if mh > 0 else ''
+            if not maks:
+                maks = ''           # wyrażone w całości < 0,5 m3 - jak MIETEK
+        else:                      # wskaźnik bez udziału powierzchni
+            # przestoje: miążdżość podana w m3 całkowitych
+            pow_w, maks = None, (str(int(mh)) if mh > 0 else '')
         s += ('│' + c(w, 10, '<') + '│' + c(_f4(pow_w), 9) + '│' + c(maks, 5) +
               '│' + ' ' * 9 + '│' + ' ' * 7 + '│' + ' ' * 5 + '│')
     return s
@@ -469,82 +548,166 @@ def generuj_optax_txt(obreb_dir, dane=None, pozycje=None, agencja=None):
         agencja = czytaj_agencje(obreb) or ''
     obiekt, stan = czytaj_dane_wsi(obreb)
 
-    wydzs = sorted(dane['O'], key=_klucz_wydz)
+    def _klucz_optax(o):
+        oddz = str(o.get('ODDZIAL', '') or '').strip()
+        poddz = str(o.get('PODODDZ', '') or '').strip()
+        # warianty z sufiksem 'x' (np. 1ax) MIETEK wyprowadza po wszystkich
+        # normalnych pododdziałach danego oddziału
+        wariant = 1 if len(poddz) > 1 and poddz.endswith('x') else 0
+        try:
+            return (int(float(oddz)), wariant, poddz, oddz)
+        except ValueError:
+            return (9999, wariant, poddz, oddz)
 
-    # bloki: (wiersze) per wydzielenie
+    wydzs = sorted(dane['O'], key=_klucz_optax)
+
+    # bloki: (wiersze) per wydzielenie; na końcu każdego oddziału wiersz R.oddz.
     bloki = []
     suma_pow = 0.0
-    suma_miaz = 0.0
-    suma_maks = 0.0
+    suma_miaz = 0
+    suma_maks = 0
+    oddz_pow, oddz_miaz, oddz_maks = 0.0, 0, 0
+    cur_oddz = None
+
+    def _tot_row(name, p, mz, mk):
+        return ('│' + f"{name}".ljust(7) + '│' + _f4(p).rjust(9) + '│' + ' ' * 35 +
+                '│    │    │     │   │    │   │   │' + str(int(mz)).rjust(5) + '│' +
+                ' ' * 10 + '│' + ' ' * 9 + '│' + str(int(mk)).rjust(5) +
+                '│' + ' ' * 9 + '│' + ' ' * 7 + '│' + ' ' * 5 + '│')
+
+    def _koniec_oddzialu():
+        if cur_oddz is None:
+            return
+        bloki.append([_tot_row('R.oddz.', oddz_pow, oddz_miaz, oddz_maks)])
+
     for o in wydzs:
         key = f"{o.get('ODDZIAL', '')}{o.get('PODODDZ', '')}".strip()
+        oddz = str(o.get('ODDZIAL', '') or '').strip()
+        if cur_oddz is not None and oddz != cur_oddz:
+            _koniec_oddzialu()
+            oddz_pow, oddz_miaz, oddz_maks = 0.0, 0, 0
+        cur_oddz = oddz
         r = dane['R_by'].get(key, {})
         pow_w = float(o.get('POW_WYDZ') or 0)
         zasob = float(r.get('ZASOB') or 0)
         suma_pow += pow_w
         suma_miaz += round(zasob * pow_w)
+        oddz_pow += pow_w
+        oddz_miaz += round(zasob * pow_w)
         # opis: siedlisko + gatunki, potem segmenty OP_TAX (po 35 znaków)
         stl = _STL.get(int(o.get('TYP_SIED') or 0), '')
         op_t = str(o.get('OP_TAX', '') or '')
+        op_t1 = str(o.get('OP_TAX1', '') or '')
         segs = [op_t[i * 35:(i + 1) * 35].strip() for i in range(7)]
+        segs += [op_t1[i * 35:(i + 1) * 35].strip() for i in range(7)]
         segs = [s for s in segs if s]
-        # nr-y rejestrów właścicieli tego wydzielenia
-        nrs, lp_strs = [], []
+        # nr-y rejestrów właścicieli tego wydzielenia (wg lp pozycji)
+        tmp = {}
         for d in dane['D']:
-            if (f"{d.get('ODDZIAL', '')}{d.get('PODODDZ', '')}".strip() == key
-                    and d.get('NRREJ') not in nrs):
-                nrs.append(d.get('NRREJ'))
-                lp_strs.append(f"{lp_map.get(int(d.get('NRREJ') or 0), 0)}/{int(d.get('NRREJ') or 0)}")
-        nry = 'nr-y.Rej. ' + ','.join(lp_strs) + ',' if lp_strs else ''
+            if f"{d.get('ODDZIAL', '')}{d.get('PODODDZ', '')}".strip() == key:
+                nr = int(d.get('NRREJ') or 0)
+                tmp.setdefault(nr, lp_map.get(nr, 0))
+        lp_strs = [f"{lp}/{nr}" for nr, lp in sorted(tmp.items(), key=lambda kv: kv[1])]
+        # nr-y rejestrów zawijane po elementach do 35 znaków (jak MIETEK)
+        nry_rows = []
+        if lp_strs:
+            line = 'nr-y.Rej. '
+            for it in lp_strs:
+                item = it + ','
+                if len(line) + len(item) > 35:
+                    nry_rows.append(line)
+                    line = ''
+                line += item
+            if line:
+                nry_rows.append(line)
         desc = [f"{stl:<7}{str(o.get('GTD1', '') or ''):<4}{str(o.get('GTD2', '') or ''):<4}"
-                f"{str(o.get('GTD3', '') or '')}".rstrip()] + segs + ([nry] if nry else [])
+                f"{str(o.get('GTD3', '') or '')}".rstrip()] + segs + nry_rows
 
-        # elementy taksacyjne
-        def nn(v):
-            return '' if not v else v
+        # elementy taksacyjne; wydzielenie może mieć DWA rekordy R:
+        # warstwę wskaźnikową (kl_wiek='') i taksację (z kl_wiek) — wtedy
+        # wiersz główny z warstwy wskaźnikowej, a taksacja wiersz dalej
+        rs = dane.get('R_all', {}).get(key, [])
+        r_prz = next((x for x in rs if not str(x.get('KL_WIEK', '') or '').strip()), None)
+        r_tak = next((x for x in rs if str(x.get('KL_WIEK', '') or '').strip()), None)
+        dual = r_prz is not None and r_tak is not None
+        r_main = r_prz if dual else r
+        zasob_m = float(r_main.get('ZASOB') or 0)
 
-        wiek = r.get('WIEK')
-        miaz_pow = round(zasob * pow_w)
-        if r.get('PRZES'):
-            miaz_pow = round(zasob)
+        wiek = r_main.get('WIEK')
+        miaz_pow = round(zasob_m * pow_w)
+        if r_main.get('PRZES'):
+            miaz_pow = round(zasob_m)
         row1_tail = [
-            str(r.get('GATUNEK', '') or '').strip(),          # 4 Gat. gł
+            str(r_main.get('GATUNEK', '') or '').strip(),          # 4 Gat. gł
             str(wiek) if wiek else '',                        # 5 Wiek
-            str(r.get('KL_WIEK', '') or '').strip(),         # 6 Klasa
-            str(r.get('WYS') or '') if r.get('WYS') else '',  # 7 Wys
-            str(r.get('PIERS') or '') if r.get('PIERS') else '',  # 8 Pier
-            str(r.get('BONIT', '') or '').strip(),            # 9 Bon
-            f"{r.get('ZADRZEW', 0) or 0:.1f}" if wiek else '',  # 10 Zad
-            str(miaz_pow) if miaz_pow else '',                # 11 Miąż na pow
+            str(r_main.get('KL_WIEK', '') or '').strip(),         # 6 Klasa
+            str(r_main.get('WYS') or '') if r_main.get('WYS') else '',  # 7 Wys
+            str(r_main.get('PIERS') or '') if r_main.get('PIERS') else '',  # 8 Pier
+            str(r_main.get('BONIT', '') or '').strip(),            # 9 Bon
+            f"{r_main.get('ZADRZEW', 0) or 0:.1f}" if wiek else '',  # 10 Zad
+            str(miaz_pow) if wiek else '',                  # 11 Miąż na pow
         ]
 
-        wsks = [(w, pw, _miaz_na_ha(w, mz, zasob)) for w, pw, mz in _wsks(r)]
+        # taksacja drugiego rekordu (wiersz po ostatnim wskaźniku)
+        tail2 = None
+        if dual:
+            w2 = r_tak.get('WIEK')
+            m2 = round(float(r_tak.get('ZASOB') or 0) * pow_w)
+            tail2 = [
+                str(r_tak.get('GATUNEK', '') or '').strip(),
+                str(w2) if w2 else '',
+                str(r_tak.get('KL_WIEK', '') or '').strip(),
+                str(r_tak.get('WYS') or '') if r_tak.get('WYS') else '',
+                str(r_tak.get('PIERS') or '') if r_tak.get('PIERS') else '',
+                str(r_tak.get('BONIT', '') or '').strip(),
+                f"{r_tak.get('ZADRZEW', 0) or 0:.1f}" if w2 else '',
+                str(m2) if w2 else '',
+            ]
+
+        wsks = [(_wsk_kod(w, mz) if pw > 0 else re.sub(r'-\d+m3/ha$', '', w),
+                 pw, _miaz_na_ha(w, mz, zasob)) for w, pw, mz in _wsks(r_main)]
         for w, pw, mh in wsks:
             if mh > 0:
-                suma_maks += round(mh * (pw / 100.0) * pow_w)
+                if pw > 0:
+                    mk = round(mh * (pw / 100.0) * pow_w)
+                else:              # przestój: m3 całkowite
+                    mk = int(mh)
+                suma_maks += mk
+                oddz_maks += mk
                 break
 
         # zbuduj wiersze bloku
         rows = []
         wsk_i = 0
         for di, dline in enumerate(desc):
+            wsk = None
+            if wsk_i < len(wsks):
+                wsk = wsks[wsk_i]
+                wsk_i += 1
             if di == 0:
-                wsk = wsks[0] if wsks else None
-                wsk_i = 1
                 rows.append(_seg_optax(
                     (f"{o.get('ODDZIAL', '')}{o.get('PODODDZ', '')}".strip(),
                      _f4(pow_w)) + tuple(row1_tail), dline, wsk, pow_w))
             else:
-                wsk = wsks[wsk_i] if wsk_i < len(wsks) else None
-                wsk_i += 1
                 rows.append(_seg_optax(None, dline, wsk, pow_w))
         # dodatkowe wskaźniki bez linii opisu
         while wsk_i < len(wsks):
             rows.append(_seg_optax(None, '', wsks[wsk_i], pow_w))
             wsk_i += 1
+        # taksacja drugiego rekordu R
+        if dual:
+            pos = max(len(wsks), 1)
+            if pos < len(rows):
+                # wiersz opisu na tej pozycji — przerenderuj z elementami
+                dline = desc[pos] if pos < len(desc) else ''
+                rows[pos] = _seg_optax(None, dline, None, pow_w, tail2)
+            else:
+                rows.append(_seg_optax(None, '', None, pow_w, tail2))
         bloki.append(rows)
 
-    # --- składanie stron (budżet 24 wiersze blokowe; SEP przed blokiem) ---
+    # --- składanie stron: budżet 27 linii danych (bloki + separatory),
+    # blok wydzielenia nigdy nie jest dzielony między strony; końcowa stopka
+    # (R.oddz. ostatniego oddziału + Razem) nie podlega paginacji ---
     lines = []
     pages, cur, used = [], [], 0
 
@@ -555,38 +718,43 @@ def generuj_optax_txt(obreb_dir, dane=None, pozycje=None, agencja=None):
         cur, used = [], 0
 
     for rows in bloki:
-        if used and used + len(rows) > 24:
+        add = len(rows) + (1 if used > 0 else 0)
+        if used > 0 and used + add > 27:
             eject()
+            add = len(rows)
         if used:
             cur.append(_OP_H[-1])
         cur.extend(rows)
-        used += len(rows)
+        used += add
 
-    def tot_row(name):
-        return ('│' + f"{name}".ljust(7) + '│' + _f4(suma_pow).rjust(9) + '│' + ' ' * 35 +
-                '│    │    │     │   │    │   │   │' + str(int(suma_miaz)).rjust(5) + '│' +
-                ' ' * 10 + '│' + ' ' * 9 + '│' + str(int(suma_maks)).rjust(5) +
-                '│' + ' ' * 9 + '│' + ' ' * 7 + '│' + ' ' * 5 + '│')
-
+    # stopka końcowa na ostatniej stronie (bez limitu — tak MIETEK)
+    if bloki:
+        if cur:
+            cur.append(_OP_H[-1])
+        cur.append(_tot_row('R.oddz.', oddz_pow, oddz_miaz, oddz_maks))
+        cur.append(_OP_H[-1])
+        cur.append(_tot_row(' Razem ', suma_pow, suma_miaz, suma_maks))
     if cur:
-        cur.append(_OP_H[-1])
-        cur.append(tot_row('R.oddz.'))
-        cur.append(_OP_H[-1])
-        cur.append(tot_row(' Razem '))
+        pages.append(cur)
 
     _bot_last = _OP_BOT[:59] + '┼' + _OP_BOT[60:]
     pageno = 1
-    all_pages = pages + [cur] if cur else pages
-    last_page = all_pages[-1] if all_pages else None
+    all_pages = pages
     for pg in all_pages:
-        pcl = _OP_PCL if pageno <= 4 else ''
+        is_last = pg is all_pages[-1]
+        if is_last:
+            # nagłówek ostatniej strony: 14L gdy strona się mieści, czysty przy przepełnieniu
+            nl = 2 + len(_OP_H) + len(pg) + 3
+            pcl = _OP_PCL.replace('&a9L', '&a14L') if nl <= 42 else ''
+        else:
+            pcl = _OP_PCL
         hdr = ('\r' if pageno == 1 else '\f\r') + pcl + agencja.ljust(114) + f"Strona {pageno:4d}"
         lines.append(hdr)
         lines.append(' Opis lasów i gruntów przeznaczonych do zalesienia'.ljust(56) +
                      f"Obiekt: {obiekt}".ljust(49) + f"Stan na: {stan}")
         lines.extend(_OP_H)
         lines.extend(pg)
-        lines.append(_bot_last if pg is last_page else _OP_BOT)
+        lines.append(_bot_last if is_last else _OP_BOT)
         pageno += 1
     lines.append('\f')
 
@@ -625,6 +793,8 @@ _OCHR = {0: '0-brak ochronności', 1: '1-wod.', 2: '2-pow. gleb.', 3: '3-nieuż.
 
 
 def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
+    # numer strony: MIETEK kontynuuje licznik OPTAX obcięty do 1 cyfry (5 i 75 -> '5')
+    strona_start = (int(strona_start) % 10) or 10
     """TAB_KLW3.TXT (po przeniesieniu halizn)."""
     obreb = Path(obreb_dir)
     if dane is None:
@@ -635,38 +805,53 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
         agencja = czytaj_agencje(obreb) or ''
     obiekt, _ = czytaj_dane_wsi(obreb)
 
-    # --- agregacja po gatunkach i klasach wieku (z pominięciem PRZES) ---
-    gat_order, gat_pow, gat_m3 = [], {}, {}
-    for rr in dane['R']:
-        g = str(rr.get('GATUNEK', '') or '').strip()
+    # --- agregacja po gatunkach i klasach wieku ---
+    # Kolejność gatunków: pierwsze wystąpienie w R wg oddziału/pododdziału
+    # (jak indeks odpod MIETEKA). Wydzielenie może mieć DWA rekordy R:
+    # warstwę przestojową (klw='', wsk zwykle 'Us.przest.') i taksację
+    # (klw + ZASOB). Miążdżość liczymy per wydzielenie z zaokrągleniem
+    # PO zsumowaniu powierzchni działek (weryfikowane na JAŹWI).
+    gat_order = []
+    for r in sorted(dane['R'], key=_klucz_wydz):
+        g = str(r.get('GATUNEK', '') or '').strip()
         if g and g not in gat_order:
             gat_order.append(g)
-            gat_pow[g] = [0.0] * 15
-            gat_m3[g] = [0.0] * 15
-    for d in dane['D']:
-        key = f"{d.get('ODDZIAL', '')}{d.get('PODODDZ', '')}".strip()
-        r = dane['R_by'].get(key, {})
+
+    R_w = {}
+    for r in dane['R']:
         if r.get('PRZES'):
             continue
-        gat = str(r.get('GATUNEK', '') or '').strip() or '??'
-        if gat not in gat_pow:
-            gat_order.append(gat)
-            gat_pow[gat] = [0.0] * 15   # niezalesiona + 14 kolumn klas
-            gat_m3[gat] = [0.0] * 15
-        # (gatunki z R już są w gat_order)
-        zasob = float(r.get('ZASOB') or 0)
-        lz = float(d.get('POW_L_ZAL') or 0)
-        lnz = float(d.get('POW_L_NZAL') or 0)
-        kl = str(r.get('KL_WIEK', '') or '').strip()
-        try:
-            kidx = _TK_KLASY.index(kl) if kl else -1
-        except ValueError:
-            kidx = -1
-        if lnz > 0:
-            gat_pow[gat][0] += lnz
-        if lz > 0 and kidx >= 0:
-            gat_pow[gat][1 + kidx] += lz
-            gat_m3[gat][1 + kidx] += zasob * lz
+        R_w.setdefault(f"{r.get('ODDZIAL', '')}{r.get('PODODDZ', '')}".strip(), []).append(r)
+    dz_lz = {}
+    for d in dane['D']:
+        k = f"{d.get('ODDZIAL', '')}{d.get('PODODDZ', '')}".strip()
+        lz, lnz = float(d.get('POW_L_ZAL') or 0), float(d.get('POW_L_NZAL') or 0)
+        if k in dz_lz:
+            dz_lz[k] = (dz_lz[k][0] + lz, dz_lz[k][1] + lnz)
+        else:
+            dz_lz[k] = (lz, lnz)
+
+    gat_pow = {g: [0.0] * 15 for g in gat_order}
+    gat_m3 = {g: [0] * 15 for g in gat_order}
+    for key, recs in R_w.items():
+        drz = next((r for r in recs if str(r.get('KL_WIEK', '') or '').strip()), None)
+        prz = next((r for r in recs if not str(r.get('KL_WIEK', '') or '').strip()), None)
+        lz, lnz = dz_lz.get(key, (0.0, 0.0))
+        # powierzchnie niezalesione: gatunek warstwy przestojowej, a przy jej
+        # braku - drzewostanu (działki częściowo niezalesione)
+        g_n = str((prz or drz or {}).get('GATUNEK', '') or '').strip()
+        if g_n in gat_pow:
+            gat_pow[g_n][0] += lnz
+            if drz is not None:
+                # miążdżość przestojów: 2x round(zasob x lnz) - tak liczy MIETEK
+                gat_m3[g_n][0] += 2 * round(float(drz.get('ZASOB') or 0) * lnz)
+        if drz is not None:
+            g_d = str(drz.get('GATUNEK', '') or '').strip()
+            klw = str(drz.get('KL_WIEK', '') or '').strip()
+            if g_d in gat_pow and klw in _TK_KLASY:
+                i = 1 + _TK_KLASY.index(klw)
+                gat_pow[g_d][i] += lz
+                gat_m3[g_d][i] += round(float(drz.get('ZASOB') or 0) * lz)
 
     def wiersz(gat, m3):
         if m3:
@@ -696,7 +881,7 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
     for gat in gat_order + ['__razem__']:
         if gat == '__razem__':
             gat_pow[gat] = [sum(gat_pow[g][i] for g in gat_order) for i in range(15)]
-            gat_m3[gat] = [sum(round(gat_m3[g][i]) for g in gat_order) for i in range(15)]
+            gat_m3[gat] = [sum(gat_m3[g][i] for g in gat_order) for i in range(15)]
             name = ' Razem '
         else:
             pad = 7 - len(gat)
@@ -708,9 +893,8 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
         lines.append(_TK_H[-1])
     lines[-1] = _TK_BOT
 
-    # stopki części 1
-    inne = sum(float(o.get('POW_WYDZ') or 0) for o in dane['O']
-               if 301 <= (o.get('RODZ_POW') or 0) <= 399)
+    # stopki części 1: „inne grunty (staw, jez.)" = suma POW_INNE z działek rejestrowych
+    inne = sum(float(d.get('POW_INNE') or 0) for d in dane['D'])
     dozal = sum(float(o.get('POW_WYDZ') or 0) for o in dane['O']
                 if 400 <= (o.get('RODZ_POW') or 0) <= 409)
     lasy = sum(gat_pow['__razem__'])
@@ -718,17 +902,22 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
                      ('Razem lasy', lasy)):
         lines.append(' ' * 146 + label.ljust(26) + '-' + _f4(v).rjust(10))
 
-    # --- część 2: siedliskowe typy lasu ---
+    # --- część 2: siedliskowe typy lasu (bez niezalesionych bagien 321) ---
     stl_pow = {}
+    inne_siedl = 0.0
     for o in dane['O']:
         kod = int(o.get('TYP_SIED') or 0)
+        if str(o.get('RODZ_POW') or '').strip() == '321':
+            inne_siedl += float(o.get('POW_WYDZ') or 0)
+            continue
         stl_pow[kod] = stl_pow.get(kod, 0.0) + float(o.get('POW_WYDZ') or 0)
     kody = sorted(stl_pow)
     nazwy = [_STL.get(k, str(k)) for k in kody]
     ncol = len(kody) + 1
+    w2 = max(39, ncol * 10 - 1)   # nagłówek rozciąga się, gdy kolumn > 4
     lines.append('\f\r\x1b(s16.67H\x1b&l9E\x1b&a8L 2. Zestawienie powierzchni siedliskowych typów lasu - ' + obiekt)
-    lines.append('┌──────────────────┬' + '─' * 39 + '┐')
-    lines.append('│ Wyszczególnienie │' + 'Siedliskowe typy lasu'.center(39) + '│')
+    lines.append('┌──────────────────┬' + '─' * w2 + '┐')
+    lines.append('│ Wyszczególnienie │' + 'Siedliskowe typy lasu'.center(w2) + '│')
     lines.append('│                  ├' + '┬'.join(['─' * 9] * ncol) + '┤')
     cells = ['  ' + n.ljust(7) for n in nazwy] + ['  Razem  ']
     lines.append('│                  │' + '│'.join(cells) + '│')
@@ -737,7 +926,7 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
     lines.append('│ Powierzchnia ha  │' + '│'.join(vals) + '│')
     lines.append('└──────────────────┴' + '┴'.join(['─' * 9] * ncol) + '┘')
     lines.append('')
-    lines.append('  powierzchnie inne = ' + _f4(inne).rjust(9) + ' ha')
+    lines.append('  powierzchnie inne = ' + _f4(inne_siedl).rjust(9) + ' ha')
     lines.append('')
     lines.append('')
 
@@ -764,15 +953,20 @@ def generuj_tab_klw3_txt(obreb_dir, dane=None, agencja=None, strona_start=1):
     lines.append('')
     lines.append('')
 
-    # --- część 4: drzewostany do przebudowy (JAKOSC=1) ---
-    przebud_pow, przebud_zasob = 0.0, 0.0
+    # --- część 4: drzewostany do przebudowy (RODZ_POW 199) ---
+    przebud_pow, przebud_zasob = 0.0, 0
     for o in dane['O']:
+        if str(o.get('RODZ_POW') or '').strip() != '199':
+            continue
         key = f"{o.get('ODDZIAL', '')}{o.get('PODODDZ', '')}".strip()
-        r = dane['R_by'].get(key, {})
-        if (r.get('JAKOSC') or 0) == 1:
-            p = float(o.get('POW_WYDZ') or 0)
-            przebud_pow += p
-            przebud_zasob += float(r.get('ZASOB') or 0) * p
+        p = float(o.get('POW_WYDZ') or 0)
+        przebud_pow += p
+        m3 = 0
+        for r in dane.get('R_all', {}).get(key, []):
+            z = float(r.get('ZASOB') or 0)
+            if z:
+                m3 = max(m3, round(z * p))
+        przebud_zasob += m3
     lines.append('4. Zestawienie powierzchni dla drzewostanów do przebudowy')
     lines.append('')
     lines.append(f"      Razem  pow:{_f4(przebud_pow).rjust(10)} ha        "
@@ -826,11 +1020,21 @@ def _rj_row(nr_poz, nazwa, d_item, wsk_item, dane):
             '', '',
         ] + [''] * 4
     if wsk_item is not None:
-        w, pw, mh, d = wsk_item
-        pow_z = pw / 100.0 * float(d.get('POW') or 0)
-        miaz = f"{mh * pow_z:.1f}" if mh > 0 else ''
-        seg[12:16] = [w.split('-')[0], _f4(pow_z), miaz, '']
-    c1 = (f"{nr_poz}".rjust(7) + ' ') if nr_poz else ' ' * 8
+        w, pw, mh, mz, d = wsk_item
+        if pw > 0:
+            pow_z = pw / 100.0 * float(d.get('POW') or 0)
+            miaz = f"{mh * pow_z:.1f}" if mh > 0 else ''
+        else:                      # wskaźnik bez udziału powierzchni
+            pow_z, miaz = None, ''
+        seg[12:16] = [_wsk_rj_kod(w, mz), _f4(pow_z), miaz, '']
+    if nr_poz:
+        _lp, _nr = nr_poz.split('/')
+        _s = f"{_lp}/{_nr}"
+        _L = 4 - len(_lp) - (1 if len(_nr) >= 3 else 0)
+        _R = 8 - _L - len(_s)
+        c1 = ' ' * _L + _s + ' ' * _R
+    else:
+        c1 = ' ' * 8
     row = '│' + c1 + '│' + f"{nazwa}".ljust(50)
     widths = [7, 6, 4, 3, 3, 9, 9, 9, 9, 9, 9, 2, 10, 9, 6, 7]
     for k, (v, wd) in enumerate(zip(seg, widths)):
@@ -865,11 +1069,11 @@ def generuj_rejestr1_txt(obreb_dir, dane=None, agencja=None):
             wsks = _wsks(r)
             if wsks:
                 w, pw, mz = wsks[0]
-                stream.append(('D', d, r, o, (w, pw, _miaz_na_ha(w, mz, zasob), d)))
+                stream.append(('D', d, r, o, (w, pw, _miaz_na_ha(w, mz, zasob), mz, d)))
             else:
                 stream.append(('D', d, r, o, None))
             for w, pw, mz in wsks[1:]:
-                stream.append(('Z', d, r, o, (w, pw, _miaz_na_ha(w, mz, zasob), d)))
+                stream.append(('Z', d, r, o, (w, pw, _miaz_na_ha(w, mz, zasob), mz, d)))
         # wylewanie na pulę wierszy właścicieli (nazwisko/adres), potem dopisywane
         pool = []
         for w in ws:
@@ -894,6 +1098,17 @@ def generuj_rejestr1_txt(obreb_dir, dane=None, agencja=None):
                             item[4], is_pool))
             else:
                 els.append(('row', nr_poz, nazwa, None, item[4], is_pool))
+        # nadmiarowi właściciele (bez działek w tej pozycji) — same puste pola
+        for w, kind in pool[len(stream):]:
+            if kind == 'name':
+                nazwa = f"{str(w.get('NAZWISKO', '') or '').strip()} " \
+                        f"{str(w.get('IMIE', '') or '').strip()} " \
+                        f"{str(w.get('RODZICE', '') or '').strip()}".strip()
+                nr_poz = f"{lp}/{nrrej}"
+            else:
+                nazwa = str(w.get('ADRES', '') or '').strip()
+                nr_poz = ''
+            els.append(('row', nr_poz, nazwa, None, None, True))
         # blok "Razem"
         seen_dz, dz_sum, poz_sums = [], {}, [0.0] * 5
         for d in ds:
@@ -909,7 +1124,7 @@ def generuj_rejestr1_txt(obreb_dir, dane=None, agencja=None):
         for dz in seen_dz:
             els.append(('razem', f" Razem dzialka {dz}".ljust(28) +
                         _f4(dz_sum[dz]) + ' ha', None))
-        els.append(('razem', f" Razem pozycja {f'{lp}/{nrrej}':>6}".ljust(28) +
+        els.append(('razem', f" Razem pozycja {lp:>3}/{nrrej}".ljust(28) +
                     _f4(poz_sums[4]) + ' ha', poz_sums))
         for k in range(5):
             tot_obj[k] += poz_sums[k]
@@ -982,15 +1197,487 @@ def _strona_rej(rows, pageno, agencja, obiekt):
 # WSKAZ1.TXT — wykaz wskaźników (pusty przy braku danych)
 # ----------------------------------------------------------------------------
 
+# Słownik rozwinięć kodów wskaźników (SWSKAZA.LST mietka;
+# przy braku pliku używany jest wbudowany odpowiednik)
+_ZADANIA = {
+    'CP': 'czyszczenia późne',
+    'CP w 2naw.': 'CP w 2 nawrotach',
+    'CP z m3': 'CP z masą',
+    'CS': 'cięcia sanitarne',
+    'CW': 'czyszczenia wczesne',
+    'Dol.': 'dolesienia',
+    'Inne': 'pozostałe wskazania',
+    'Magr.oczyś': 'mel.agrotech. - oczyścić',
+    'Magr.wyrów': 'mel.agrotech. - wyrównać',
+    'Mel.agr.': 'melioracje agrotechniczne',
+    'Mel.wodne': 'melioracje wodne',
+    'Naw.': 'nawożenie',
+    'Oczyścić': 'oczyścić',
+    'Odn.': 'odnowić',
+    'Piel.': 'pielęgnowanie uprawy',
+    'Piel.p.poz': 'pielegnowac pasy p.poz.',
+    'Pods.': 'podsadzenia',
+    'Popr.': 'poprawki',
+    'Pozostawić': 'pozostawić',
+    'Przeklas.': 'przeklasyfikowac',
+    'Rb I': 'rębnia I',
+    'Rb II': 'rębnia II',
+    'Rb III': 'rębnia III',
+    'Rb IV': 'rębnia IV',
+    'TP': 'trzebież późna',
+    'TW': 'trzebież wczesna',
+    'TW w 2naw.': 'TW w 2 nawrotach',
+    'Uprzątnąc': 'uprzątnąć',
+    'Us.nas.': 'usunąć nasienniki',
+    'Us.przedr.': 'usunąć przedrosty',
+    'Us.przest.': 'usunąć przestoje',
+    'Uzup.': 'uzupełnienia',
+    'Wpr.podsz.': 'wprowadzenie podszytu',
+    'Wyrównać': 'wyrównać',
+    'Zalesić': 'zalesić',
+    '16Xdo29II': 'wykonywać pom. 16X-29II',
+    'drz.dziupl': 'pozostawić drz. dziuplast',
+    'do5l po Rb': 'do 5 lat po Rb',
+    'Nat.2000': 'obszar Natura 2000',
+    'O.chr.kr.': 'Obszar Chron.Krajobr.',
+    'Wykonyw.': 'wykonywać',
+}
+
+def _czytaj_zadania(obreb_dir):
+    """Słownik kod -> nazwa zadania; z SWSKAZA.LST mietka albo wbudowany."""
+    kandydaci = []
+    obreb = Path(obreb_dir)
+    for bazowy in (obreb, obreb.parent):
+        for nazwa in ('SWSKAZA.LST', 'SWSKAZA .LST'):
+            kandydaci.append(bazowy / nazwa)
+    for path in kandydaci:
+        try:
+            if not path.exists():
+                continue
+            recs = czytaj_dbf(path)
+            if recs and recs[0].get('SKROT') is not None:
+                sl = {str(r.get('SKROT', '') or '').strip():
+                      str(r.get('NAZWA', '') or '').strip() for r in recs}
+                sl.pop('', None)
+                if sl:
+                    return sl
+        except Exception:
+            continue
+    return dict(_ZADANIA)
+
+_W1_TOP = '┌─────────┬───────┬───────────────────┬───────────────────┬─────────────────────────────────────────────────────────────────┬────────────┐'
+_W1_H1 = '│         │Oddział│   Powierzchnia    │Skrócony opis lasu │           Zadania w zakresie gospodarki leśnej                  │            │'
+_W1_H2 = '│  Numer  │poddz. ├─────────┬─────────┤(gat.gł.,wiek,bon.,├────────────────────────────────────┬────────────┬───────────────┤            │'
+_W1_H3 = '│ działki │na     │  lasu   │ gruntu  │ rodzaj pow. ochr.)│                Rodzaj              │Powierzchnia│Maks.miąż. (m3)│    Uwagi   │'
+_W1_H4 = '│         │mapie  │         │ do zal. │według stanu na:   │                zadania             │     w      ├───────┬───────┤            │'
+_W1_H5 = '│         │gospod.├─────────┴─────────┤                   │                                    │   [ ha ]   │ p.ręb.│rębnym │            │'
+_W1_SEP1 = '├─────────┼───────┼─────────┬─────────┼───────────────────┼────────────────────────────────────┼────────────┼───────┼───────┼────────────┤'
+_W1_SEP = '├─────────┼───────┼─────────┼─────────┼───────────────────┼────────────────────────────────────┼────────────┼───────┼───────┼────────────┤'
+_W1_NUM = '│    1    │   2   │    3    │    4    │         5         │                   6                │      7     │   8   │   9   │     10     │'
+_W1_RSEP = '├─────────────────┼─────────┼─────────┼───────────────────┴────────────────────────────────────┴────────────┼───────┼───────┼────────────┤'
+_W1_BOT = '└─────────────────┴─────────┴─────────┴─────────────────────────────────────────────────────────────────────┴───────┴───────┴────────────┘'
+
 def generuj_wskaz1_txt(obreb_dir, dane=None, agencja=None):
+    """WSKAZ1.TXT — zadania w zakresie gospodarki leśnej na 10-lecie,
+    rozbite na pozycje rejestru (jedna strona = jedna pozycja)."""
     obreb = Path(obreb_dir)
     if dane is None:
         dane = _wczytaj_obreb(obreb)
     if dane is None:
         return None
     o_path = dane['o_path']
-    out = o_path.parent / 'WSKAZ1.TXT' if o_path else obreb / 'WSKAZ1.TXT'
-    out.write_bytes(b'')
+    out_dir = o_path.parent if o_path else obreb
+    out = out_dir / 'WSKAZ1.TXT'
+    if agencja is None:
+        agencja = czytaj_agencje(obreb) or ''
+    obiekt, stan = czytaj_dane_wsi(obreb)
+
+    # daty 10-lecia z WSIE.DBF
+    od_txt = do_txt = ''
+    wsie_path = znajdz_dbf(obreb, 'WSIE')
+    if wsie_path is not None:
+        try:
+            w = czytaj_dbf(wsie_path)
+            if w:
+                v = str(w[0].get('OBOW_OD', '') or '').strip()
+                if re.match(r'^\d{8}$', v):
+                    od_txt = f"{v[6:8]}-{v[4:6]}-{v[0:4]}"
+                v = str(w[0].get('OBOW_DO', '') or '').strip()
+                if re.match(r'^\d{8}$', v):
+                    do_txt = f"{v[6:8]}-{v[4:6]}-{v[0:4]}"
+        except Exception:
+            pass
+
+    zadania = _czytaj_zadania(obreb)
+    pozycje = _pozycje_rejestru(dane)
+
+    def _row(c1, c2, c3, c4, c5, c6, c7, c8, c9):
+        return ('│' + c1 + '│' + c2 + '│' + c3 + '│' + c4 + '│' + c5 +
+                '│' + c6 + '│' + c7 + '│' + c8 + '│' + c9 + '│' + ' ' * 12 + '│')
+
+    pcl = '\r\x1b(s16.67H\x1b&l5E\x1b&a20L' + (agencja or '').ljust(40)
+    chunks = []
+    for lp, (nrrej, ws, ds) in enumerate(pozycje, start=1):
+        if not ds:
+            continue
+        rows = []
+        razem_l = razem_n = 0.0
+        razem8 = razem9 = 0
+        for d in ds:
+            key = f"{d.get('ODDZIAL', '')}{d.get('PODODDZ', '')}".strip()
+            r = dane['R_by'].get(key, {}) or {}
+            lz = float(d.get('POW_L_ZAL') or 0)
+            ln = float(d.get('POW_L_NZAL') or 0)
+            nz = float(d.get('POW_N_ZAL') or 0)
+            pow_l = lz + ln
+            razem_l += pow_l
+            razem_n += nz
+            hal = ln > 0
+            gat = 'hal.' if hal else str(r.get('GATUNEK', '') or '').strip()
+            wiek = '' if hal else str(r.get('WIEK', '') or '').strip()
+            bon = str(r.get('BONIT', '') or '').strip()
+            c5 = f"{gat:<4}-{wiek:>3} - {bon:<3}".ljust(19)
+            zasob = float(r.get('ZASOB') or 0)
+            wsks = _wsks(r) if r else []
+            for j, (wsk, pw, mz) in enumerate(wsks):
+                kod = str(wsk).split('-')[0].strip()
+                nazwa = zadania.get(kod, '')
+                c6 = f"{kod} : {nazwa}"[:36].ljust(36)
+                pow_w = pow_l * pw / 100.0
+                c7 = _f4(pow_w).rjust(12)
+                c8 = c9 = ' ' * 7
+                mh = _miaz_na_ha(wsk, mz, zasob)
+                if kod.startswith('Rb'):
+                    v = round(zasob * pow_w)
+                    if v > 0:
+                        c9 = str(v).rjust(7)
+                elif kod.startswith(('TP', 'TW')):
+                    v = round(mh * pow_w)
+                    if v > 0:
+                        c8 = str(v).rjust(7)
+                razem8 += int(c8) if c8.strip() else 0
+                razem9 += int(c9) if c9.strip() else 0
+                if j == 0:
+                    c1 = str(d.get('NR_DZIAL', '') or '').strip().ljust(9)
+                    c2 = key.rjust(7)
+                    c3 = _f4(pow_l).rjust(9)
+                    c4 = _f4(nz).rjust(9) if nz > 0 else ' ' * 9
+                else:
+                    c1 = ' ' * 9
+                    c2 = ' ' * 7
+                    c3 = ' ' * 9
+                    c4 = ' ' * 9
+                    c5 = ' ' * 19
+                rows.append(_row(c1, c2, c3, c4, c5, c6, c7, c8, c9))
+        razem = ('│ Razem:          │' + _f4(razem_l).rjust(9) + '│' +
+                 _f4(razem_n).rjust(9) + '│' + ' ' * 69 + '│' +
+                 str(razem8).rjust(7) + '│' + str(razem9).rjust(7) + '│' +
+                 ' ' * 12 + '│')
+        h6 = ('│         │       │        [ha]       │ ' + (stan or '').ljust(18) +
+              '│                                    │            │       │       │            │')
+        tab = '\r\n'.join([_W1_TOP, _W1_H1, _W1_H2, _W1_H3, _W1_H4, _W1_H5, h6,
+                            _W1_SEP1, _W1_NUM, _W1_SEP] + rows +
+                           [_W1_RSEP, razem, _W1_BOT])
+        head = pcl + '\r\n Obiekt: ' + obiekt + '\r\n' + ' ' * 38 + \
+            'ZADANIA W ZAKRESIE GOSPODARKI LEŚNEJ\r\n' + ' ' * 38 + \
+            f'na okres od {od_txt} do {do_txt}' + '\r\n\r\n'
+        wlasc = ''
+        for w in ws:
+            nazw = str(w.get('NAZWISKO', '') or '').strip()
+            imie = str(w.get('IMIE', '') or '').strip()
+            rodz = str(w.get('RODZICE', '') or '').strip()
+            nazwa = 'P. ' + ' '.join(x for x in (nazw, imie, rodz) if x)
+            wlasc += nazwa.ljust(79) + f"Nr rej:{int(w.get('NRREJ') or 0):>6}" + \
+                '\r\n' + f"Adres  :{str(w.get('ADRES', '') or '').strip()}".ljust(68) + '\n\r'
+        chunks.append(('\x0c' if chunks else '') + head + wlasc + tab + '\r\n')
+    out.write_bytes((''.join(chunks) + '\x0c').encode('cp852'))
+    return out
+
+
+# ----------------------------------------------------------------------------
+# WYK_NEG.TXT — zestawienie drzewostanów negatywnych i źle produkujących
+# ----------------------------------------------------------------------------
+
+_WN_PCL = '\r\x1b(s16.67H\x1b&l9E\x1b&a8L'
+_WN_GORA = '┌───────┬────────────┬─────────┬────┬──────────┐'
+_WN_H1 = '│ Oddz. │  Skrócony  │   Pow.  │ Zas│   Uwagi  │'
+_WN_H2 = '│ Podod.│  opis lasu │   [ha]  │ m3 │          │'
+_WN_SEP = '├───────┼────────────┼─────────┼────┼──────────┤'
+_WN_SEP_RAZEM = '├───────┴────────────┼─────────┼────┼──────────┤'
+_WN_DOL = '└────────────────────┴─────────┴────┴──────────┘'
+
+
+def generuj_wyk_neg_txt(obreb_dir, dane=None, agencja=None):
+    """WYK_NEG.TXT — drzewostany negatywne (RODZ_POW 198) i źle produkujące (199).
+
+    Brak takich wydzieleń => plik pusty (0 B), jak w MIETEKU.
+    """
+    obreb = Path(obreb_dir)
+    if dane is None:
+        dane = _wczytaj_obreb(obreb)
+    if dane is None:
+        return None
+    o_path = dane['o_path']
+    out = o_path.parent / 'WYK_NEG.TXT' if o_path else obreb / 'WYK_NEG.TXT'
+
+    neg = [r for r in dane['O'] if (r.get('RODZ_POW') or 0) in (198, 199)]
+    if not neg:
+        out.write_bytes(b'')
+        return out
+
+    obiekt, _ = czytaj_dane_wsi(obreb)
+    neg.sort(key=_klucz_wydz)
+
+    lines = [
+        _WN_PCL + 'Zestawienie powierzchni i zasobnosci dla drzewostanów '
+                  'neg. i zle produkujacych  - ' + obiekt,
+        _WN_GORA, _WN_H1, _WN_H2, _WN_SEP,
+    ]
+    suma_pow, suma_zas = 0.0, 0
+    for o in neg:
+        key = f"{o.get('ODDZIAL', '')}{o.get('PODODDZ', '')}".strip()
+        r = dane['R_by'].get(key, {})
+        oddz = f"{str(o.get('ODDZIAL', '') or '').strip()}{str(o.get('PODODDZ', '') or '').strip()}"
+        gat = str(r.get('GATUNEK', '') or '').strip()
+        bonit = str(r.get('BONIT', '') or '').strip()[:3]
+        wiek = int(r.get('WIEK') or 0)
+        opis = f"{gat:<4}-{bonit:<3}-{wiek:>3}"
+        pow_w = o.get('POW_WYDZ') or 0
+        zas = round((r.get('ZASOB') or 0) * pow_w)
+        suma_pow += pow_w
+        suma_zas += zas
+        lines.append('│' + f"{oddz:<7}│{opis}│{pow_w:>9.4f}│{zas:>4}│          │")
+
+    lines.append(_WN_SEP_RAZEM)
+    lines.append('│           Razem    │' + f"{suma_pow:>9.4f}│{suma_zas:>4}│          │")
+    lines.append(_WN_DOL)
+    out.write_bytes(('\r\n'.join(lines) + '\r\n').encode('cp852'))
+    return out
+
+
+# ----------------------------------------------------------------------------
+# WSK_ZB.TXT — zestawienie czynności gospodarczych (zbiorcze wskaźniki)
+# ----------------------------------------------------------------------------
+
+_WZ_PCL = '\r\x1b&l6E\x1b&a10L\x1b(s3T'
+
+# grupy wskaźników (kody jak w SWSKAZA.LST / kodzie MIETEKA)
+_WZ_REBNE = {'Rb I', 'Rb II', 'Rb III', 'Rb IV'}
+_WZ_POZ_REBNE = {'Uprzątnąć', 'uprz.płaz', 'Us.przest.', 'Us.nas.', 'Us.przedr.'}
+_WZ_CZ_POLNE_Z_MASA = {'CP z m3'}
+_WZ_TRZ_WCZESNE = {'TW', 'TW w 2naw.'}
+_WZ_TRZ_POZNE = {'TP'}
+_WZ_SANITARNE = {'CS'}
+_WZ_ZALES = {'Zalesić'}
+_WZ_ODN = {'Odn.'}
+_WZ_POPR_UZUP = {'Popr.', 'Uzup.'}
+_WZ_DOL = {'Dol.'}
+_WZ_PIEL_UPR = {'Piel.', 'CW'}
+_WZ_PIEL_MLOD = {'CP', 'CP w 2naw.'}
+_WZ_PODSZYT = {'Wpr.podsz.'}
+_WZ_PODSADZ = {'Pods', 'Pods.'}
+_WZ_MEL_AGR = {'Mel.agr.', 'Magr.', 'Magr.oczyś', 'Magr.wyrówn.'}
+_WZ_MEL_WODNE = {'Mel.wodne'}
+
+
+def _obow_daty(obreb_dir):
+    """Daty obowiązywania planu z WSIE.DBF (OBOW_OD/OBOW_DO) jako dd-mm-yyyy."""
+    wsie_path = znajdz_dbf(Path(obreb_dir), 'WSIE')
+    if wsie_path is not None:
+        try:
+            recs = czytaj_dbf(wsie_path)
+            if recs:
+                od = str(recs[0].get('OBOW_OD', '') or '').strip()
+                do = str(recs[0].get('OBOW_DO', '') or '').strip()
+                if re.match(r'^\d{8}$', od) and re.match(r'^\d{8}$', do):
+                    return (f"{od[6:8]}-{od[4:6]}-{od[0:4]}",
+                            f"{do[6:8]}-{do[4:6]}-{do[0:4]}")
+        except Exception:
+            pass
+    # fallback: 10-lecie od roku po dacie stanu
+    _, stan = czytaj_dane_wsi(Path(obreb_dir))
+    rok = int(stan[:4]) + 1 if stan[:4].isdigit() else 2027
+    return (f'01-01-{rok}', f'31-12-{rok + 9}')
+
+
+def _wz_wystapienia(dane):
+    """Wystąpienia wskaźników: (wsk, pw%, miaz, pow_wydz, zasob, rodz_pow)."""
+    out = []
+    o_by = dane['O_by']
+    for r in dane['R']:
+        key = f"{r.get('ODDZIAL', '')}{r.get('PODODDZ', '')}".strip()
+        o = o_by.get(key)
+        pow_w = o.get('POW_WYDZ') or 0 if o else 0
+        rodz = o.get('RODZ_POW') or 0 if o else 0
+        for i in range(1, 7):
+            w = str(r.get(f'WSK{i}', '') or '').strip()
+            if not w:
+                continue
+            w = re.sub(r'-\d+m3/ha$', '', w)
+            pw = r.get(f'POW_WSK{i}') or 0
+            mz = r.get(f'MIAZ{i}') or 0
+            out.append((w, pw, mz, pow_w, r.get('ZASOB') or 0, rodz))
+    return out
+
+
+def _wz_pow(occ, kody):
+    """Suma powierzchni [ha] wskazań z danej grupy (ważona procentem)."""
+    return sum(pw / 100.0 * pow_w for w, pw, mz, pow_w, z, rodz in occ if w in kody)
+
+
+def _wz_m3(occ, kody, tryb='wazony'):
+    """Suma miążdżności [m3] dla grupy.
+
+    tryb 'wazony'  — m3/ha × procent × powierzchnia (m3/ha: MIAZ, dla Rb — ZASOB,
+                      dla CS bez MIAZ — 5% ZASOB);
+    tryb 'raw'     — suma pol MIAZ bez ważenia (przestoje/p przedrostki).
+    """
+    s = 0.0
+    for w, pw, mz, pow_w, z, rodz in occ:
+        if w not in kody:
+            continue
+        if tryb == 'raw':
+            s += mz
+            continue
+        m3ha = mz
+        if m3ha <= 0:
+            if w.startswith('Rb'):
+                m3ha = z
+            elif w == 'CS':
+                m3ha = 0.05 * z
+        s += m3ha * (pw / 100.0) * pow_w
+    return s
+
+
+def _wz_linia(label, pow_ha, m3=None):
+    wiersz = f"{label:<37}" + f"{pow_ha:.4f} ha".rjust(10)
+    if m3 is not None:
+        wiersz += f"{round(m3)} m3".rjust(14)
+    else:
+        wiersz += '  '
+    return wiersz
+
+
+def generuj_wsk_zb_txt(obreb_dir, dane=None, agencja=None):
+    """WSK_ZB.TXT — zestawienie czynności gospodarczych na 10-lecie."""
+    obreb = Path(obreb_dir)
+    if dane is None:
+        dane = _wczytaj_obreb(obreb)
+    if dane is None:
+        return None
+    o_path = dane['o_path']
+    out = o_path.parent / 'WSK_ZB.TXT' if o_path else obreb / 'WSK_ZB.TXT'
+    if agencja is None:
+        agencja = czytaj_agencje(obreb) or ''
+    obiekt, _ = czytaj_dane_wsi(obreb)
+    od_dat, do_dat = _obow_daty(obreb)
+
+    occ = _wz_wystapienia(dane)
+
+    # --- I. użytkowanie ---
+    rebne_pow = _wz_pow(occ, _WZ_REBNE)
+    rebne_m3 = _wz_m3(occ, _WZ_REBNE)
+    poz_pow = _wz_pow(occ, _WZ_POZ_REBNE)
+    poz_m3 = _wz_m3(occ, _WZ_POZ_REBNE, tryb='raw')
+    czp_pow = _wz_pow(occ, _WZ_CZ_POLNE_Z_MASA)
+    czp_m3 = _wz_m3(occ, _WZ_CZ_POLNE_Z_MASA)
+    tw_pow = _wz_pow(occ, _WZ_TRZ_WCZESNE)
+    tw_m3 = _wz_m3(occ, _WZ_TRZ_WCZESNE)
+    tp_pow = _wz_pow(occ, _WZ_TRZ_POZNE)
+    tp_m3 = _wz_m3(occ, _WZ_TRZ_POZNE)
+    cs_pow = _wz_pow(occ, _WZ_SANITARNE)
+    cs_m3 = _wz_m3(occ, _WZ_SANITARNE)
+
+    razem_rebne_pow = rebne_pow + poz_pow
+    razem_rebne_m3 = rebne_m3 + poz_m3
+    razem_przed_pow = czp_pow + tw_pow + tp_pow + cs_pow
+    razem_przed_m3 = czp_m3 + tw_m3 + tp_m3 + cs_m3
+    ogo_pow = razem_rebne_pow + razem_przed_pow
+    ogo_m3 = razem_rebne_m3 + razem_przed_m3
+
+    # --- II. hodowla ---
+    zales_pow = _wz_pow(occ, _WZ_ZALES)
+    odn_pow = _wz_pow(occ, _WZ_ODN)
+
+    # rozbicie odnowień wg RODZ_POW wydzieleń z wskazaniem Odn.
+    zreby = hal_płaz = hal_rol = 0.0
+    for w, pw, mz, pow_w, z, rodz in occ:
+        if w not in _WZ_ODN:
+            continue
+        p = pw / 100.0 * pow_w
+        if rodz == 240:
+            zreby += p
+        elif 241 <= rodz <= 245:
+            hal_płaz += p
+            if rodz in (244, 245):
+                hal_rol += p
+    # powierzchnie leśne niezalesione pozostałe: z działek minus te w odnowieniach
+    lnzal = sum(d.get('POW_L_NZAL') or 0 for d in dane['D'])
+    niezal_ost = lnzal - zreby - hal_płaz
+
+    razem_odn_zales = zales_pow + odn_pow
+    popr_uzup_pow = _wz_pow(occ, _WZ_POPR_UZUP)
+    popr_spodz_pow = round(0.2 * odn_pow, 4)
+    dol_pow = _wz_pow(occ, _WZ_DOL)
+    piel_upr_pow = _wz_pow(occ, _WZ_PIEL_UPR)
+    piel_mlod_pow = _wz_pow(occ, _WZ_PIEL_MLOD)
+    podszyt_pow = _wz_pow(occ, _WZ_PODSZYT)
+    podsadz_pow = _wz_pow(occ, _WZ_PODSADZ)
+    mel_agr_pow = _wz_pow(occ, _WZ_MEL_AGR)
+    mel_wod_pow = _wz_pow(occ, _WZ_MEL_WODNE)
+
+    lines = [
+        _WZ_PCL + agencja.ljust(40),
+        '',
+        ' Zestawienie czynności gospodarczych projektowanych do wykonania',
+        f' w 10-leciu od {od_dat} do {do_dat} wg. wskazań gospodarczych',
+        f' dla obiektu {obiekt}',
+        '',
+        ' I. Użytkowanie lasu',
+        '',
+        '   A. Użytkowanie rębne            ',
+        _wz_linia('      1. Użytki rębne właściwe', rebne_pow, rebne_m3),
+        _wz_linia('      2. Pozostałe użytki rębne', poz_pow, poz_m3),
+        '   ' + '-' * 61,
+        _wz_linia('   Ogółem użytki rębne', razem_rebne_pow, razem_rebne_m3),
+        '   ' + '-' * 61,
+        '',
+        '   B. Użytkowanie przedrębne       ',
+        _wz_linia('      1. cz. późne z masą', czp_pow, czp_m3),
+        _wz_linia('      2. trzebieże wczesne', tw_pow, tw_m3),
+        _wz_linia('      3. trzebieże późne', tp_pow, tp_m3),
+        _wz_linia('      4. cięcia sanitarne', cs_pow, cs_m3),
+        '   ' + '-' * 60,
+        _wz_linia('   Razem użytki przedrębne', razem_przed_pow, razem_przed_m3),
+        '   ' + '=' * 60,
+        _wz_linia('   Ogółem użytkowanie w 10-leciu', ogo_pow, ogo_m3),
+        '',
+        '',
+        '',
+        'II. Hodowla lasu ',
+        _wz_linia('   1. Zalesienia', zales_pow),
+        _wz_linia('   2. Odnowienia', odn_pow),
+        _wz_linia('       Zręby', zreby),
+        _wz_linia('         w tym zręby bież.', 0.0),
+        _wz_linia('       Halizny i płazowiny', hal_płaz),
+        _wz_linia('         w tym halizny uż. rol.', hal_rol),
+        _wz_linia('   3. Pow. leśne niezal. pozostałe', niezal_ost),
+        '   ' + '-' * 60,
+        _wz_linia('   Razem odnowienia i zalesienia', razem_odn_zales),
+        '   ' + '-' * 60,
+        _wz_linia('   3. Poprawki i uzupełnienia', popr_uzup_pow),
+        _wz_linia('   4. Poprawki spodziewane', popr_spodz_pow),
+        _wz_linia('   5. Dolesienie luk', dol_pow),
+        _wz_linia('   6. Pielęgnowanie upraw', piel_upr_pow),
+        _wz_linia('   7. Pielęgnowanie młodników', piel_mlod_pow),
+        _wz_linia('   8. Wprowadzanie podszytów', podszyt_pow),
+        _wz_linia('   9. Podsadzenia produkcyjne', podsadz_pow),
+        '',
+        _wz_linia('  10. Melioracje agrotechniczne', mel_agr_pow),
+        _wz_linia('  11. Melioracje wodne', mel_wod_pow),
+        '\x0c',
+    ]
+    out.write_bytes(('\r\n'.join(lines)).encode('cp852'))
     return out
 
 
@@ -998,32 +1685,51 @@ def generuj_wskaz1_txt(obreb_dir, dane=None, agencja=None):
 # Generowanie całości
 # ----------------------------------------------------------------------------
 
-def generuj_wszystkie_po_przeniesieniu(obreb_dir, agencja=None):
-    """Generuje OPTAX, TAB_KLW3, ZEST1, REJESTR1, WSKAZ1 (po przeniesieniu halizn).
+def generuj_wszystkie_po_przeniesieniu(obreb_dir, agencja=None, tylko=None):
+    """Generuje wydruki MIETEKA (po przeniesieniu halizn).
 
+    tylko: opcjonalny zbiór nazw plików, które mają powstać
+           (np. {'OPTAX.TXT', 'WSKAZ1.TXT'}); None = komplet.
     Numeracja stron TAB_KLW3 kontynuuje OPTAX (jak w MIETEKU).
     Zwraca słownik {nazwa: ścieżka}.
     """
+    wybrane = {str(t).upper() for t in tylko} if tylko else None
+
+    def _chk(nazwa):
+        return wybrane is None or nazwa in wybrane
+
     dane = _wczytaj_obreb(obreb_dir)
     if dane is None:
         return {}
     pozycje = _pozycje_rejestru(dane)
     out = {}
     optax_stron = 0
-    try:
-        p, optax_stron = generuj_optax_txt(obreb_dir, dane=dane, pozycje=pozycje,
-                                           agencja=agencja)
-        if p:
-            out['OPTAX.TXT'] = p
-    except Exception:
-        import traceback
-        traceback.print_exc()
+    if _chk('OPTAX.TXT'):
+        try:
+            p, optax_stron = generuj_optax_txt(obreb_dir, dane=dane, pozycje=pozycje,
+                                               agencja=agencja)
+            if p:
+                out['OPTAX.TXT'] = p
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    elif _chk('TAB_KLW3.TXT'):
+        # OPTAX nie jest generowany — liczbę stron bierzemy z istniejącego pliku
+        d = dane['o_path'].parent if dane.get('o_path') else Path(obreb_dir)
+        try:
+            optax_stron = (d / 'OPTAX.TXT').read_bytes().count(b'\x0c')
+        except Exception:
+            optax_stron = 0
     for fn, gen, kw in (
         ('TAB_KLW3.TXT', generuj_tab_klw3_txt, dict(strona_start=optax_stron or 1)),
         ('ZEST1.TXT', generuj_zest1_txt, dict(pozycje=pozycje)),
         ('REJESTR1.TXT', generuj_rejestr1_txt, dict()),
         ('WSKAZ1.TXT', generuj_wskaz1_txt, dict()),
+        ('WYK_NEG.TXT', generuj_wyk_neg_txt, dict()),
+        ('WSK_ZB.TXT', generuj_wsk_zb_txt, dict()),
     ):
+        if not _chk(fn):
+            continue
         try:
             p = gen(obreb_dir, dane=dane, agencja=agencja, **kw)
             if p:
