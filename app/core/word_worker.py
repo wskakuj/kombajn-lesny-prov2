@@ -94,7 +94,10 @@ def run_word_worker(in_dir_str, out_dir_str, remove_names, file_filter=None, mar
             # --------------------------------------------------------------------
 
             # --- NAPRAWA LITERÓWKI — ZAWSZE (niezależnie od remove_names) ---
-            text = text.replace("Wskazania godspodarcze", "Wskazania gospodarcze")
+            # Spacja na końcu jest celowa: "gospodarcze" jest o 1 znak krótsze od
+            # "godspodarcze", więc bez niej reszta wiersza (ramka tabeli │...│)
+            # przesuwa się o 1 pozycję w lewo i kolumny się rozjeżdżają.
+            text = text.replace("Wskazania godspodarcze", "Wskazania gospodarcze ")
             # ----------------------------------------------------------------
 
             doc = Document()
