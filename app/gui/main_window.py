@@ -159,7 +159,6 @@ class ModernApp(
         self.rozl_out_entry = None
         self.rozl_start_btn = None
 
-        self.rozliczanie_tabview = None
         self.mietki_base_entry = None
         self.mietki_out_entry = None
         self.mietki_names_textbox = None
@@ -338,11 +337,11 @@ class ModernApp(
         parent.grid_columnconfigure((1, 3, 5, 7), weight=0)
         self.dash_steps = []
         steps_info = [
-            ("1. TXT", "Czyszczenie"),
-            ("2. Word", "Kompilacja"),
-            ("3. PDF", "Konwersja"),
-            ("4. Scalanie", "Integracja"),
-            ("5. Optymalizacja", "Weryfikacja"),
+            ("1. Halizny", "Generowanie"),
+            ("2. TXT", "Czyszczenie"),
+            ("3. Word", "Kompilacja"),
+            ("4. PDF", "Konwersja"),
+            ("5. Scalanie", "Integracja"),
         ]
         for i, (title, subtitle) in enumerate(steps_info):
             col = i * 2
@@ -421,11 +420,11 @@ class ModernApp(
     def reset_dashboard(self):
         if hasattr(self, "dash_steps"):
             subtitles = [
+                "Generowanie",
                 "Czyszczenie",
                 "Kompilacja",
                 "Konwersja",
                 "Integracja",
-                "Weryfikacja",
             ]
             for i, step in enumerate(self.dash_steps):
                 self.update_dashboard(i, "pending", subtitles[i])
@@ -509,117 +508,124 @@ class ModernApp(
         self.bottom_panel.grid(row=2, column=0, padx=20, pady=(0, 15), sticky="ew")
         self.bottom_panel.grid_columnconfigure(0, weight=1)
 
-        self.tabview = ctk.CTkTabview(
-            self.top_panel, corner_radius=6, command=self.on_tab_change
-        )
-        self.tabview.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
-        category_mietek = self.tabview.add("MIETEK")
-        category_taksator = self.tabview.add("TAKSATOR")
-        category_rozliczanie = self.tabview.add("ROZLICZANIE")
-        category_pdfconv = self.tabview.add("Konwerter PDF")
+        # --- PIONOWE MENU (zamiast zakładek u góry) ---
+        self.aktualna_zakladka = None          # klucz "SEKCJA|Nazwa"
+        self.aktualna_zakladka_nazwa = None
+        self._zakladka_frames = {}
+        self._zakladka_buttons = {}
 
-        for category_tab in (category_mietek, category_taksator, category_rozliczanie, category_pdfconv):
-            category_tab.grid_rowconfigure(0, weight=1)
-            category_tab.grid_columnconfigure(0, weight=1)
+        self.top_panel.grid_columnconfigure(0, weight=0)
+        self.top_panel.grid_columnconfigure(1, weight=1)
 
-        self.mietek_tabview = ctk.CTkTabview(
-            category_mietek, corner_radius=6, command=self.on_subtab_change
+        sidebar = ctk.CTkScrollableFrame(
+            self.top_panel, width=300, corner_radius=6,
+            fg_color=("gray88", "gray17"),
         )
-        self.mietek_tabview.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
-        self.taksator_tabview = ctk.CTkTabview(
-            category_taksator, corner_radius=6, command=self.on_subtab_change
-        )
-        self.taksator_tabview.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
+        sidebar.grid(row=1, column=0, sticky="nsw", padx=(0, 8), pady=8)
+        self.sidebar = sidebar
 
-        tab_all = self.mietek_tabview.add("Pełny Automat (1-Click)")
-        tab_wydruki_mietek = self.mietek_tabview.add("Generowanie: MIETEK -> TXT")
-        self.setup_wydruki_tab(tab_wydruki_mietek)
-        tab_word = self.mietek_tabview.add("Konwersja: MIETEK -> Word")
-        tab_mietek_tpl_gen = self.mietek_tabview.add("Kreator Szablonu STR_TYT")
-        tab_mietek_title = self.mietek_tabview.add("Zaczytywanie danych STR_TYT")
-        tab_pdf = self.mietek_tabview.add("Konwersja: Word -> PDF")
-        tab_manual = self.mietek_tabview.add("Ręczne scalanie PDF")
-        tab_mietek_rozb = self.mietek_tabview.add("Wykaz Rozbieżności")
-        self.setup_mietek_rozbieznosci_tab(tab_mietek_rozb)
-        tab_nazwiska_mietek = self.mietek_tabview.add("NAZWISKA -> MIETEK")
-        self.setup_nazwiska_mietek_tab(tab_nazwiska_mietek)
+        self.content_area = ctk.CTkFrame(self.top_panel, fg_color="transparent")
+        self.content_area.grid(row=1, column=1, sticky="nsew")
+        self.content_area.grid_rowconfigure(0, weight=1)
+        self.content_area.grid_columnconfigure(0, weight=1)
 
-        tab_template_gen = self.taksator_tabview.add("Kreator Szablonu STR_TYT")
-        tab_title = self.taksator_tabview.add("Zaczytywanie danych STR_TYT")
-        tab_excel = self.taksator_tabview.add("Układanie Exceli")
-        tab_layout_excel = self.taksator_tabview.add("Wyłożenie Excel")
-        tab_split_pdf = self.taksator_tabview.add("PDF + segregowanie wsi")
-        tab_mdb_update = self.taksator_tabview.add("Usuwanie 0 w MDB")
+        font_btn_menu = ctk.CTkFont(family="Segoe UI", size=13)
+        font_naglowka = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
 
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict[
-                "Pełny Automat (1-Click)"
-            ],
-            "Kompleksowy proces: czyści TXT, generuje i układa Worda, konwertuje na PDF i scala w gotowy dokument.",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict[
-                "Konwersja: MIETEK -> Word"
-            ],
-            "Tylko etap 1: Oczyszcza surowe pliki z systemu MIETEK i układa pliki Word.",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict[
-                "Kreator Szablonu STR_TYT"
-            ],
-            "Generuje jeden bazowy dokument Word ze stroną tytułową na podstawie wpisanych danych.",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict[
-                "Zaczytywanie danych STR_TYT"
-            ],
-            "Masowo tworzy strony tytułowe dla każdej wsi (MIETEK), wciągając dane z plików Word (OPTAX).",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict[
-                "Konwersja: Word -> PDF"
-            ],
-            "Tylko etap 2: Zamienia gotowe pliki word na PDF i łączy w jeden plik.",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict["Ręczne scalanie PDF"],
-            "Moduł ręczny: pozwala wczytać luźne PDF-y, poukładać je myszką w odpowiedniej kolejności i połączyć.",
-        )
+        def _naglowek(tekst):
+            ctk.CTkLabel(
+                sidebar, text=tekst, font=font_naglowka, anchor="w",
+                text_color=("gray35", "gray60"),
+            ).pack(fill="x", padx=12, pady=(14, 2))
 
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict[
-                "Kreator Szablonu STR_TYT"
-            ],
-            "Generuje jeden bazowy dokument Word ze stroną tytułową na podstawie wpisanych danych.",
-        )
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict[
-                "Zaczytywanie danych STR_TYT"
-            ],
-            "Masowo tworzy strony tytułowe dla każdej wsi, wciągając dane z zestawień Excel.",
-        )
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict["Układanie Exceli"],
-            "Optymalizuje pliki Excel: ukrywa zbędne arkusze, sortuje je i dostosowuje wielkość czcionki do druku.",
-        )
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict["Wyłożenie Excel"],
-            "Pobiera strony tytułowe, opisy i raporty, a następnie scala je w gotowe, pełne paczki PDF dla każdej wsi.",
-        )
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict[
-                "PDF + segregowanie wsi"
-            ],
-            "Konwertuje raporty i opisy, zachowując je jako osobne pliki PDF podzielone na foldery dla poszczególnych wsi.",
-        )
-        add_tooltip(
-            self.taksator_tabview._segmented_button._buttons_dict["Usuwanie 0 w MDB"],
-            "Kopiuje bazy Access (.mdb) do nowego folderu i modyfikuje adresy leśne w tabeli F_ARODES.",
-        )
-        add_tooltip(
-            self.mietek_tabview._segmented_button._buttons_dict["NAZWISKA -> MIETEK"],
-            "Klonuje strukturę MS-DOS i generuje W*.DBF pobierając nazwiska wyłącznie na podstawie pliku Ewidencji XLS."
-        )
+        def _nowa_zakladka(sekcja, nazwa, tooltip=None):
+            klucz = f"{sekcja}|{nazwa}"
+            ramka = ctk.CTkFrame(self.content_area, fg_color="transparent")
+            ramka.grid(row=0, column=0, sticky="nsew")
+            ramka.grid_columnconfigure(0, weight=1)
+            ramka.grid_rowconfigure(0, weight=1)
+            ramka.grid_remove()
+            self._zakladka_frames[klucz] = ramka
+            btn = ctk.CTkButton(
+                sidebar, text=nazwa, anchor="w", height=34, corner_radius=6,
+                font=font_btn_menu, fg_color="transparent",
+                hover_color=("gray75", "gray28"),
+                text_color=("gray10", "gray90"),
+                command=lambda k=klucz: self.pokaz_zakladke(k),
+            )
+            btn.pack(fill="x", padx=6, pady=2)
+            self._zakladka_buttons[klucz] = btn
+            if tooltip:
+                add_tooltip(btn, tooltip)
+            return ramka
+
+        # ---- MIETEK ----
+        _naglowek("MIETEK")
+        tab_all = _nowa_zakladka(
+            "MIETEK", "Pełny Automat (1-Click)",
+            "Kompleksowy proces: czyści TXT, generuje i układa Worda, "
+            "konwertuje na PDF i scala w gotowy dokument.")
+        tab_wydruki_mietek = _nowa_zakladka("MIETEK", "Generowanie: MIETEK -> TXT")
+        tab_word = _nowa_zakladka(
+            "MIETEK", "Konwersja: MIETEK -> Word",
+            "Tylko etap 1: Oczyszcza surowe pliki z systemu MIETEK i układa pliki Word.")
+        tab_mietek_tpl_gen = _nowa_zakladka(
+            "MIETEK", "Kreator Szablonu STR_TYT",
+            "Generuje jeden bazowy dokument Word ze stroną tytułową "
+            "na podstawie wpisanych danych.")
+        tab_mietek_title = _nowa_zakladka(
+            "MIETEK", "Zaczytywanie danych STR_TYT",
+            "Masowo tworzy strony tytułowe dla każdej wsi (MIETEK), "
+            "wciągając dane z plików Word (OPTAX).")
+        tab_pdf = _nowa_zakladka(
+            "MIETEK", "Konwersja: Word -> PDF",
+            "Tylko etap 2: Zamienia gotowe pliki word na PDF i łączy w jeden plik.")
+        tab_manual = _nowa_zakladka(
+            "MIETEK", "Ręczne scalanie PDF",
+            "Moduł ręczny: pozwala wczytać luźne PDF-y, poukładać je myszką "
+            "w odpowiedniej kolejności i połączyć.")
+        tab_mietek_rozb = _nowa_zakladka("MIETEK", "Wykaz Rozbieżności")
+        tab_nazwiska_mietek = _nowa_zakladka(
+            "MIETEK", "NAZWISKA -> MIETEK",
+            "Klonuje strukturę MS-DOS i generuje W*.DBF pobierając nazwiska "
+            "wyłącznie na podstawie pliku Ewidencji XLS.")
+
+        # ---- TAKSATOR ----
+        _naglowek("TAKSATOR")
+        tab_template_gen = _nowa_zakladka(
+            "TAKSATOR", "Kreator Szablonu STR_TYT",
+            "Generuje jeden bazowy dokument Word ze stroną tytułową "
+            "na podstawie wpisanych danych.")
+        tab_title = _nowa_zakladka(
+            "TAKSATOR", "Zaczytywanie danych STR_TYT",
+            "Masowo tworzy strony tytułowe dla każdej wsi, wciągając dane z zestawień Excel.")
+        tab_excel = _nowa_zakladka(
+            "TAKSATOR", "Układanie Exceli",
+            "Optymalizuje pliki Excel: ukrywa zbędne arkusze, sortuje je "
+            "i dostosowuje wielkość czcionki do druku.")
+        tab_layout_excel = _nowa_zakladka(
+            "TAKSATOR", "Wyłożenie Excel",
+            "Pobiera strony tytułowe, opisy i raporty, a następnie scala je "
+            "w gotowe, pełne paczki PDF dla każdej wsi.")
+        tab_split_pdf = _nowa_zakladka(
+            "TAKSATOR", "PDF + segregowanie wsi",
+            "Konwertuje raporty i opisy, zachowując je jako osobne pliki PDF "
+            "podzielone na foldery dla poszczególnych wsi.")
+        tab_mdb_update = _nowa_zakladka(
+            "TAKSATOR", "Usuwanie 0 w MDB",
+            "Kopiuje bazy Access (.mdb) do nowego folderu i modyfikuje "
+            "adresy leśne w tabeli F_ARODES.")
+
+        # ---- ROZLICZANIE ----
+        _naglowek("ROZLICZANIE")
+        tab_rozl_main = _nowa_zakladka("ROZLICZANIE", "Rozliczanie powierzchni")
+        tab_tworzenie_mietkow = _nowa_zakladka("ROZLICZANIE", "Tworzenie i wpisywanie mietków")
+        tab_halizny = _nowa_zakladka("ROZLICZANIE", "Halizny")
+        tab_excel_z_mdb = _nowa_zakladka("ROZLICZANIE", "Excel z MDB")
+
+        # ---- KONWERTER PDF ----
+        _naglowek("KONWERTER PDF")
+        tab_pdfconv = _nowa_zakladka("Konwerter PDF", "Konwerter PDF")
 
         # ZMIENIONE: Dodano extra_ui_setup=self._setup_all_extras oraz dashboard=True dla zakładki ALL
         self.setup_tab(
@@ -631,6 +637,7 @@ class ModernApp(
             extra_ui_setup=self._setup_all_extras,
             dashboard=True,
         )
+        self.setup_wydruki_tab(tab_wydruki_mietek)
         self.setup_tab(
             tab_word,
             "WORD",
@@ -650,6 +657,8 @@ class ModernApp(
             extra_ui_setup=self._setup_pdf_extras,
         )
         self.setup_manual_merge_tab(tab_manual)
+        self.setup_mietek_rozbieznosci_tab(tab_mietek_rozb)
+        self.setup_nazwiska_mietek_tab(tab_nazwiska_mietek)
 
         self.setup_template_generator_tab(tab_template_gen, "TAKSATOR")
         self.setup_title_pages_tab(tab_title)
@@ -658,22 +667,14 @@ class ModernApp(
         self.setup_split_pdf_tab(tab_split_pdf)
         self.setup_mdb_update_tab(tab_mdb_update)
 
-        self.rozliczanie_tabview = ctk.CTkTabview(category_rozliczanie, corner_radius=6, command=self.on_subtab_change)
-        self.rozliczanie_tabview.grid(row=0, column=0, padx=8, pady=8, sticky="nsew")
-
-        tab_rozl_main = self.rozliczanie_tabview.add("Rozliczanie powierzchni")
-        tab_tworzenie_mietkow = self.rozliczanie_tabview.add("Tworzenie i wpisywanie mietków")
-        tab_halizny = self.rozliczanie_tabview.add("Halizny")
         self.setup_rozliczanie_tab(tab_rozl_main)
         self.setup_tworzenie_mietkow_tab(tab_tworzenie_mietkow)
         self.setup_halizny_tab(tab_halizny)
-        tab_excel_z_mdb = self.rozliczanie_tabview.add("Excel z MDB")
         self.setup_excel_z_mdb_tab(tab_excel_z_mdb)
-        # Przywrócenie widoku zakładki Konwerter PDF
-        self.setup_pdf_converter_tab(category_pdfconv)
+        self.setup_pdf_converter_tab(tab_pdfconv)
 
         self.options_frame = ctk.CTkFrame(self.top_panel, fg_color="transparent")
-        self.options_frame.grid(row=2, column=0, pady=(5, 5), sticky="w")
+        self.options_frame.grid(row=2, column=1, pady=(5, 5), sticky="w")
         self.remove_names_var = ctk.BooleanVar(value=True)
         self.cb_remove_names = ctk.CTkCheckBox(
             self.options_frame,
@@ -688,6 +689,9 @@ class ModernApp(
             self.cb_remove_names,
             "Włączenie tej opcji uruchamia makra 'ZamienLF' oraz 'UsunNazwiskaRej', a także kasuje pierwszą stronę z rejestru.",
         )
+
+        # startowo: pierwsza zakładka sekcji MIETEK
+        self.pokaz_zakladke("MIETEK|Pełny Automat (1-Click)")
 
         log_frame = ctk.CTkFrame(self.bottom_panel, corner_radius=6)
         log_frame.grid(row=0, column=0, sticky="nsew")
@@ -863,20 +867,31 @@ class ModernApp(
 
         self.update_options_visibility()
 
+    def pokaz_zakladke(self, klucz):
+        """Przełącza widok na zakładkę o kluczu 'SEKCJA|Nazwa' (pionowe menu)."""
+        for k, ramka in self._zakladka_frames.items():
+            if k == klucz:
+                ramka.grid()
+            else:
+                ramka.grid_remove()
+        for k, btn in self._zakladka_buttons.items():
+            if k == klucz:
+                btn.configure(fg_color="#0067C0", text_color="#FFFFFF")
+            else:
+                btn.configure(fg_color="transparent", text_color=("gray10", "gray90"))
+        self.aktualna_zakladka = klucz
+        self.aktualna_zakladka_nazwa = klucz.split("|", 1)[1] if klucz else None
+        self.update_options_visibility()
+
     def update_options_visibility(self):
-        main_tab = self.tabview.get()
-        if main_tab == "MIETEK":
-            sub_tab = self.mietek_tabview.get()
-            if sub_tab in ["Pełny Automat (1-Click)", "Konwersja: MIETEK -> Word"]:
-                self.options_frame.grid()
-                return
-        self.options_frame.grid_remove()
-
-    def on_subtab_change(self):
-        self.update_options_visibility()
-
-    def on_tab_change(self):
-        self.update_options_visibility()
+        of = getattr(self, "options_frame", None)
+        if of is None:
+            return
+        nazwa = getattr(self, "aktualna_zakladka_nazwa", None)
+        if nazwa in ("Pełny Automat (1-Click)", "Konwersja: MIETEK -> Word"):
+            of.grid()
+        else:
+            of.grid_remove()
 
     def update_status(self, text, color="#0078D7", animate=True):
         def _update_stat():
