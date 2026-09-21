@@ -53,6 +53,7 @@ from app.gui.tabs.tab_mdb_update import TabMdbUpdateMixin
 from app.gui.tabs.tab_pdf_converter import TabPdfConverterMixin
 from app.gui.tabs.tab_rozliczanie import TabRozliczanieMixin
 from app.gui.tabs.tab_halizny import TabHaliznyMixin
+from app.gui.tabs.tab_wydruki import TabWydrukiMixin
 from app.gui.tabs.tab_excel_z_mdb import TabExcelZMdbMixin
 from app.gui.tabs.tab_tworzenie_mietkow import TabTworzenieMietkowMixin
 from app.gui.tabs.tab_nazwiska_mietek import TabNazwiskaMietekMixin
@@ -73,6 +74,7 @@ class ModernApp(
     TabPdfConverterMixin,
     TabRozliczanieMixin,
     TabHaliznyMixin,
+    TabWydrukiMixin,
     TabExcelZMdbMixin,
     TabTworzenieMietkowMixin,
     TabNazwiskaMietekMixin,
@@ -660,9 +662,11 @@ class ModernApp(
         tab_rozl_main = self.rozliczanie_tabview.add("Rozliczanie powierzchni")
         tab_tworzenie_mietkow = self.rozliczanie_tabview.add("Tworzenie i wpisywanie mietków")
         tab_halizny = self.rozliczanie_tabview.add("Halizny")
+        tab_wydruki = self.rozliczanie_tabview.add("Wydruki z DBF")
         self.setup_rozliczanie_tab(tab_rozl_main)
         self.setup_tworzenie_mietkow_tab(tab_tworzenie_mietkow)
         self.setup_halizny_tab(tab_halizny)
+        self.setup_wydruki_tab(tab_wydruki)
         tab_excel_z_mdb = self.rozliczanie_tabview.add("Excel z MDB")
         self.setup_excel_z_mdb_tab(tab_excel_z_mdb)
         # Przywrócenie widoku zakładki Konwerter PDF
