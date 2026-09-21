@@ -159,6 +159,24 @@ class TabAllMixin:
                 # Jeśli checkbox jest odznaczony, całkowicie ukrywamy ramkę
                 self.all_skroty_frame.grid_remove()
 
+    def _resolve_skroty_path(self):
+        """Zwraca ścieżkę do pliku 'Skróty i symbole' (własny użytkownika lub domyślny z zasobów programu)."""
+        # Sprawdzamy, czy użytkownik chce użyć własnego pliku
+        if getattr(self, "all_custom_skroty_var", None) and self.all_custom_skroty_var.get():
+            custom = self.all_skroty_entry.get().strip()
+            if custom and Path(custom).exists():
+                return custom
+            self.log(
+                "[UWAGA] Wskazano własny plik 'Skróty i symbole', ale nie istnieje. Używam domyślnego z programu."
+            )
+        # Pobieranie domyślnego pliku z zasobów programu w tle
+        domyslne = get_resource_path("Skroty.pdf")
+        if not domyslne.exists():
+            domyslne = get_resource_path("Skroty.docx")
+        if domyslne.exists():
+            return str(domyslne)
+        return None
+
     def start_pipeline(self, mode):
         src_path = self.entries[mode]["src"].get()
         dst_path = self.entries[mode]["dst"].get()
@@ -450,17 +468,7 @@ class TabAllMixin:
                 # === WSTRZYKIWANIE SKROTÓW (ZAWSZE WŁĄCZONE) ===
                 self.update_status("Dołączanie 'Skrótów i symboli' do pakietów...", "#0078D7")
 
-                skroty_path = None
-                # Sprawdzamy, czy użytkownik chce użyć własnego pliku
-                if getattr(self, "all_custom_skroty_var", None) and self.all_custom_skroty_var.get():
-                    skroty_path = self.all_skroty_entry.get().strip()
-                else:
-                    # Pobieranie domyślnego pliku z zasobów programu w tle
-                    domyslne = get_resource_path("Skroty.pdf")
-                    if not domyslne.exists():
-                        domyslne = get_resource_path("Skroty.docx")
-                    if domyslne.exists():
-                        skroty_path = str(domyslne)
+                skroty_path = self._resolve_skroty_path()
 
                 # Przystępujemy do dołączenia pliku
                 if skroty_path and Path(skroty_path).exists():
@@ -522,6 +530,18 @@ class TabAllMixin:
                 )
                 self.task_convert_to_pdf(in_root, dir_03)
                 self._flatten_001_subfolders(dir_03)
+
+                # === WSTRZYKIWANIE SKROTÓW (AUTOMATYCZNIE Z SZABLONU Skroty.docx) ===
+                self.update_status("Dołączanie 'Skrótów i symboli' do pakietów...", "#0078D7")
+                skroty_path = self._resolve_skroty_path()
+                if skroty_path and Path(skroty_path).exists():
+                    c_skroty = self.task_inject_skroty(dir_03, skroty_path)
+                    self.log(f"[SKROTY] Dodano plik do {c_skroty} folderów wsi.")
+                else:
+                    self.log(
+                        "[UWAGA] Nie znaleziono pliku ze skrótami (ani domyślnego, ani własnego). Pomijam."
+                    )
+
                 self.set_progress(0.4 if do_merge else 1.0)
                 if do_merge:
                     self.check_stop()
